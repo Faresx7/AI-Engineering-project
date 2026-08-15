@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qwen 2.5 Chat</title>
+    <style>
+        /* CSS Variables for better color management and scalability */
+        :root {
+            --bg-dark: #212121;
+            --bg-bubble-bot: #2f2f2f;
+            --accent-purple: #615fff;
+            --accent-purple-hover: #504ecc;
+            --text-main: #ffffff;
+            --text-muted: #aaaaaa;
+            --border-color: #444444;
+            --max-chat-width: 700px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* Header Section */
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 15px;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .logo {
+            width: 30px;
+            height: 30px;
+            background-color: var(--accent-purple);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Chat History Box */
+        .chat-box {
+            flex: 1;
+            width: 100%;
+            max-width: var(--max-chat-width);
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            scroll-behavior: smooth;
+        }
+
+        .msg {
+            padding: 12px 16px;
+            border-radius: 12px;
+            max-width: 80%;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            /* Preserves new lines and wraps long text correctly */
+            word-break: break-word;
+        }
+
+        .bot {
+            background-color: var(--bg-bubble-bot);
+            align-self: flex-start;
+        }
+
+        .user {
+            background-color: var(--accent-purple);
+            align-self: flex-end;
+        }
+
+        /* Temporary loading bubble style */
+        .msg.typing {
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        /* Input Form Area */
+        .input-form {
+            width: 100%;
+            max-width: var(--max-chat-width);
+            padding: 15px;
+            display: flex;
+            gap: 10px;
+        }
+
+        input {
+            flex: 1;
+            padding: 12px 16px;
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+            background-color: var(--bg-bubble-bot);
+            color: var(--text-main);
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+
+        input:focus {
+            border-color: var(--accent-purple);
+        }
+
+        input:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        button {
+            padding: 10px 24px;
+            border-radius: 20px;
+            border: none;
+            background-color: var(--accent-purple);
+            color: var(--text-main);
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.2s ease, opacity 0.2s ease;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: var(--accent-purple-hover);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="logo">Q</div>
+        <span>Qwen 2.5</span>
+    </header>
+
+    <!-- Chat Messages Container -->
+    <main class="chat-box" id="chat">
+        <div class="msg bot">HI, how can i help you today?</div>
+    </main>
+
+    <!-- Input Form (Handles Enter key and Click cleanly) -->
+    <form class="input-form" id="chat-form">
+        <input type="text" id="input" placeholder="Your message..." autocomplete="off">
+        <button type="submit" id="send-btn">send</button>
+    </form>
+
+    <script>
+        async function sendMessage(e) {
+            e.preventDefault();
+            const inputField = document.getElementById('input');
+            const chatBox = document.getElementById('chat');
+            const promptText = inputField.value.trim();
+
+            if (!promptText) return;
+
+            chatBox.innerHTML += `<div class="msg user">${promptText}</div>`;
+            inputField.value = '';
+
+            const botMsgDiv = document.createElement('div');
+            botMsgDiv.className = 'msg bot';
+            chatBox.appendChild(botMsgDiv);
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: promptText })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    botMsgDiv.innerText += chunk;
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+
+            } catch (error) {
+                botMsgDiv.innerText = 'error while connecting to server';
+            }
+        }
+
+        document.getElementById('chat-form').addEventListener('submit', sendMessage);
+    </script>
+</body>
+
+</html>

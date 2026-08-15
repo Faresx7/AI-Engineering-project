@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 import base as b
 
 app = Flask(__name__)
@@ -10,22 +10,27 @@ print('===========================================================model is ready
 def home():
     return render_template('base.html')
 
-@app.route('/chat', methods = ["POST"])
-def generate():
 
+@app.route('/chat', methods=["POST"])
+def generate():
     try:
         data = request.get_json()
 
-        if not data or "prompt" not in data:
-            return jsonify({'error':'No message have been sent!'}), 400
+        if not data or "prompt" not in data or not data['prompt'].strip():
+            return jsonify({'error': 'No message has been sent!'}), 400
 
         prompt = data['prompt']
-        model_response = model.generate(prompt)
 
-        return jsonify({'response':model_response})
+        # streaming response
+        return Response(
+            stream_with_context(model.generate_response(prompt)),
+            mimetype='text/plain; charset=utf-8'
+        )
 
     except Exception as e: 
-        return jsonify({'error':str(e)}), 500
+        return jsonify({'error': str(e)}), 500
+
+    
 
 
 if __name__ == "__main__":
