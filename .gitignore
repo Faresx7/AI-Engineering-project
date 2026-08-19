@@ -1,5 +1,8 @@
 .env
+venv
 .vscode
 *.jpg
 *.txt
 __pycache__
+db
+docs
