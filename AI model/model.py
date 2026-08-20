@@ -21,22 +21,25 @@ class AIModel:
         self.chat_history = [{'role':'system','content':sys_prompt}]
 
 
-    def generate_response(self, prompt):
-        self.chat_history.append({"role": "user","content": prompt})
+    def _prepare_inputs(self, prompt):
+
+        self.chat_history.append({"role": "user", "content": prompt})
 
         if len(self.chat_history) > 7:
-            self.chat_history[:] = [self.chat_history[0]] + self.chat_history[-6:] #[:] to avoid error unbound -> function thinks this is a private variable
+            self.chat_history[:] = [self.chat_history[0]] + self.chat_history[-6:]
 
-        message = self.chat_history
-        
-        inputs = self.tokenizer.apply_chat_template(
-                message,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                    ).to(self.model.device)
+        return self.tokenizer.apply_chat_template(
+            self.chat_history,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        ).to(self.model.device)
 
+
+
+    def generate_response(self, prompt):
+        inputs = self._prepare_inputs(prompt)
 
         with torch.inference_mode():
             outputs = self.model.generate(**inputs,  #type:ignore
@@ -59,22 +62,8 @@ class AIModel:
 
 
     def generate_stream_response(self, prompt):
-        self.chat_history.append({"role": "user","content": prompt})
+        inputs = self._prepare_inputs(prompt)
 
-        if len(self.chat_history) > 7:
-            self.chat_history[:] = [self.chat_history[0]] + self.chat_history[-6:]
-
-        message = self.chat_history
-        
-        inputs = self.tokenizer.apply_chat_template(
-                message,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                    ).to(self.model.device)
-
-        
         # == this section is how to stream text into UI == 
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
 
@@ -95,3 +84,5 @@ class AIModel:
         for new_text in streamer:
             full_response += new_text
             yield new_text
+
+        self.chat_history.append({'role':'assistant', 'content': full_response})
