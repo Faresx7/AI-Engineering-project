@@ -3,7 +3,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import os
 from langchain_community.document_loaders import TextLoader, DirectoryLoader    # for reading files
-from langchain_text_splitters import CharacterTextSplitter      # for chunking
+from langchain_text_splitters import RecursiveCharacterTextSplitter      # for chunking
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma     # for vector DB
 from dotenv import load_dotenv      # To read sensitive data from .env files
@@ -33,9 +33,9 @@ def load_documents(path):
 
 def chunk_documents(docs, chunk_size = 650, chunk_overlap = 0, print_data = False):
 
-    text_splitter = CharacterTextSplitter(chunk_size = chunk_size,
-                                          chunk_overlap = chunk_overlap     # helps model keep the meaning
-                                          )
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size = chunk_size,
+                                                   chunk_overlap = chunk_overlap     # helps model keep the meaning
+                                                   )
 
     chunks = text_splitter.split_documents(docs)
 
