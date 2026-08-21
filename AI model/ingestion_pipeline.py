@@ -1,91 +1,114 @@
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-import os
 from langchain_community.document_loaders import TextLoader, DirectoryLoader    # for reading files
 from langchain_text_splitters import RecursiveCharacterTextSplitter      # for chunking
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma     # for vector DB
-from dotenv import load_dotenv      # To read sensitive data from .env files
 import shutil
+from pathlib import Path
 
-load_dotenv()
+
+class IngestionPipeline:
+    def __init__(self,
+                 docs_dir = Path(__file__).resolve().parent / "docs",
+                 db_dir = Path(__file__).resolve().parent / "db" / "chroma_db",
+                 embedding_model_name = "all-MiniLM-L6-v2",
+                 chunk_size = 650,
+                 chunk_overlap = 70,
+                 ):
+        
+        self.doc_dir = docs_dir
+        self.db_dir = db_dir
+        self.embedding_model_name = embedding_model_name
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
 
 
-def load_documents(path):
+    def _load_documents(self):
 
-    if not os.path.exists(path):
-        raise FileNotFoundError(f'Path "{path}" does not exist')
+        if not self.doc_dir.exists():
+            raise FileNotFoundError(f'Path "{self.doc_dir}" does not exist')
 
-    loader = DirectoryLoader(
-        path = path,
-        glob = "*.txt",     # filters files only want to read
-        loader_cls = TextLoader     # define the class that responsible for reading files inside the folder
+        loader = DirectoryLoader(
+            path = str(self.doc_dir),
+            glob = "*.txt",     # filters files only want to read
+            loader_cls = TextLoader     # define the class that responsible for reading files inside the folder
+            )
+        
+        docs = loader.load()
+
+        if len(docs) == 0:
+            raise FileNotFoundError(f'There is no files in "{self.doc_dir}" folder')
+
+        return docs
+        
+
+    def _chunk_documents(self,docs):
+
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size = self.chunk_size,
+                                                    chunk_overlap = self.chunk_overlap,     # helps model keep the meaning
+                                                    separators=["\n", " ", ""]
+                                                    )
+
+        chunks = text_splitter.split_documents(docs)
+
+        return chunks
+
+
+    def _create_vector_store(self, chunks):
+        """
+        Embeds text chunks using HuggingFace model and stores them in Chroma DB.
+        Model max context capacity: 256 tokens (~600-700 chars).
+        """
+        
+        if self.db_dir.exists():
+            shutil.rmtree(self.db_dir)
+
+        embedding_model = HuggingFaceEmbeddings(model_name=self.embedding_model_name)
+
+        vector_store = Chroma.from_documents(
+            documents= chunks,
+            embedding = embedding_model,
+            persist_directory = str(self.db_dir),
+            collection_metadata= {"hnsw:space":"cosine"}
         )
-    
-    docs = loader.load()
-
-    if len(docs) == 0:
-        raise FileNotFoundError(f'There is no files in "{path}" folder')
-
-    return docs
+        
+        return vector_store
 
 
-def chunk_documents(docs, chunk_size = 650, chunk_overlap = 0, print_data = False):
-
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size = chunk_size,
-                                                   chunk_overlap = chunk_overlap     # helps model keep the meaning
-                                                   )
-
-    chunks = text_splitter.split_documents(docs)
-
-    if print_data and chunks:
-        for i, chunk in enumerate(chunks):
-            print(f'\n--- chunk {i} ---')
-            print(f'Source {chunk.metadata}')
-            print(f'Length {len(chunk.page_content)} chars')
-            print('Content')
-            print(chunk.page_content)
-            print('-'*50)
-
-    return chunks
+    def get_doc_info(self,doc):
+            '''
+            return additional informations about file
+            '''
+            return f'Letters: {len(doc.page_content)}, Words: {len(doc.page_content.split())}, MetaData: {doc.metadata}'
 
 
-def create_vector_store(chunks, persist_dir = 'AI model/db/chroma_db'):
-    """
-    Embeds text chunks using HuggingFace model and stores them in Chroma DB.
-    Model max context capacity: 256 tokens (~600-700 chars).
-    """
+    def run(self, verbose = True):
 
-    
-    if os.path.exists(persist_dir):
-        shutil.rmtree(persist_dir)
+        if verbose:
+            print("🚀 [1/3] Loading documents...")
+        docs = self._load_documents()
 
-    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        if verbose:
+            print(f"✂️ [2/3] Chunking {len(docs)} document(s)...")
+        chunks = self._chunk_documents(docs)
 
-    vector_store = Chroma.from_documents(
-        documents= chunks,
-        embedding = embedding_model,
-        persist_directory = persist_dir,
-        collection_metadata= {"hnsw:space":"cosine"}
-     )
-    
-    return vector_store
+        if verbose:
+            print(f"💾 [3/3] Embedding & saving {len(chunks)} chunks to Chroma DB...")
+        vector_store = self._create_vector_store(chunks)
+
+        if verbose:
+            print("✅ Ingestion Pipeline completed successfully!")
+
+        return vector_store
 
 
-def get_doc_info(doc):
-    '''
-    return additional informations about file
-    '''
-    return f'Letters: {len(doc.page_content)}, Words: {len(doc.page_content.split())}, MetaData: {doc.metadata}'
 
-
-def main():
-
-    files = load_documents('AI model/docs')
-    chunks = chunk_documents(files,chunk_overlap=70)
-    vs = create_vector_store(chunks)
 
 
 if __name__ == "__main__":
-    main()
+    pipeline = IngestionPipeline()
+
+    vdb = pipeline.run()
+
