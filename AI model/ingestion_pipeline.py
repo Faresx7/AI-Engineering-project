@@ -14,8 +14,9 @@ from langchain_chroma import Chroma     # for vector DB
 from langchain_core.documents import Document
 
 from pathlib import Path
-import json
+import openpyxl
 import shutil
+import json
 
 
 FILE_LOADERS = {
@@ -28,6 +29,7 @@ FILE_LOADERS = {
 
 
 class IngestionPipeline:
+
     def __init__(self,
                  docs_dir=Path(__file__).resolve().parent / "docs",
                  db_dir=Path(__file__).resolve().parent / "db" / "chroma_db",
@@ -45,7 +47,52 @@ class IngestionPipeline:
 
 
     @staticmethod
+    def _excel_loader(file_path: Path) -> list[Document]:
+        docs = []
+        
+        workbook = openpyxl.load_workbook(file_path, data_only=True)
+
+        for sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+            rows = list(sheet.iter_rows(values_only=True))
+
+            if not rows or len(rows) < 2:
+                continue
+
+            headers = [
+                str(h).strip() if h is not None else f"col_{i}"
+                for i, h in enumerate(rows[0])
+                ]
+
+            for row_idx, row_values in enumerate(rows[1:], start=2):
+                row_dict = {
+                            headers[i]: str(val).strip()
+                            for i, val in enumerate(row_values)
+                            if i < len(headers) and val is not None and str(val).strip() != ""
+                            }
+
+                if not row_dict:
+                        continue
+
+                content = "\n".join([f"{k}: {v}" for k, v in row_dict.items()])
+
+                docs.append(
+                    Document(
+                            page_content=content,
+                            metadata={
+                                "source": str(file_path),
+                                "sheet": sheet_name,
+                                "row": row_idx,
+                            },
+                        )
+                    )
+
+        return docs
+
+
+    @staticmethod
     def _json_loader(file_path) -> list[Document]:
+        
         docs = []
         
         with open(file_path, "r", encoding="utf-8") as f:
@@ -75,7 +122,6 @@ class IngestionPipeline:
         
         return docs
 
-        
 
     def _load_documents(self, allowed_extensions: list[str] | None = None):
 
@@ -83,7 +129,7 @@ class IngestionPipeline:
         if not self.doc_dir.exists():
             raise FileNotFoundError(f'Path "{self.doc_dir}" does not exist')
 
-        all_supported_ext = set(FILE_LOADERS.keys()) | {".json"}
+        all_supported_ext = set(FILE_LOADERS.keys()) | {".json"} | {".xlsx", ".xls"}
 
         if allowed_extensions:
             user_ext = {ext.lower() if ext.startswith(".") else f".{ext}" for ext in allowed_extensions}
@@ -103,6 +149,11 @@ class IngestionPipeline:
                         if extension == ".json":
                             json_docs = self._json_loader(file_path)
                             docs.extend(json_docs)
+
+
+                        elif extension in [".xlsx", ".xls"]:
+                            excel_docs = self._excel_loader(file_path)
+                            docs.extend(excel_docs)
 
                             
                         elif extension in FILE_LOADERS:
@@ -145,7 +196,8 @@ class IngestionPipeline:
         if empty_pdf_files:
             print(
                 "⚠️ Warning: These PDFs contain no extractable text and may need OCR: "
-                + ", ".join(sorted(empty_pdf_files))
+                + ", ".join(sorted(empty_pdf_files)) +
+                ".\nTry to use PDF files that not scanned."
             )
 
         return docs
@@ -170,8 +222,10 @@ class IngestionPipeline:
                                                     separators=["\n\n","\n",". ", " ", ""]
                                                     )
 
+
         for doc in docs:
-            if doc.metadata.get("source", "").lower().endswith(".json"):
+            source = str(doc.metadata.get("source", "")).lower()
+            if source.endswith((".json", ".csv", ".xlsx", ".xls")):
                 final_chunks.append(doc)
             else:
                 text_docs.append(doc)
@@ -279,5 +333,5 @@ class IngestionPipeline:
 if __name__ == "__main__":
     pipeline = IngestionPipeline()
 
-    vdb = pipeline.run(preview_n_chunks=30,allowed_extensions=['.csv'])
+    vdb = pipeline.run(preview_n_chunks=30,allowed_extensions=['.pdf'])
 
