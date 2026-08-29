@@ -5,15 +5,17 @@ from langchain_community.document_loaders import (
     CSVLoader,
     PyMuPDFLoader,
     TextLoader,
-    UnstructuredWordDocumentLoader,
-    
+    UnstructuredWordDocumentLoader,   
 )
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter      # for chunking
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma     # for vector DB
-import shutil
+from langchain_core.documents import Document
+
 from pathlib import Path
+import json
+import shutil
 
 
 FILE_LOADERS = {
@@ -27,11 +29,11 @@ FILE_LOADERS = {
 
 class IngestionPipeline:
     def __init__(self,
-                 docs_dir = Path(__file__).resolve().parent / "docs",
-                 db_dir = Path(__file__).resolve().parent / "db" / "chroma_db",
-                 embedding_model_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-                 chunk_size = 800,
-                 chunk_overlap = 130,
+                 docs_dir=Path(__file__).resolve().parent / "docs",
+                 db_dir=Path(__file__).resolve().parent / "db" / "chroma_db",
+                 embedding_model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+                 chunk_size=800,
+                 chunk_overlap=130,
                  ):
         
         self.doc_dir = Path(docs_dir)
@@ -40,6 +42,39 @@ class IngestionPipeline:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.chunks = []
+
+
+    @staticmethod
+    def _json_loader(file_path) -> list[Document]:
+        docs = []
+        
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    content = "\n".join([f"{key}: {value}" for key, value in item.items()])
+                else:
+                    content = str(item)
+                
+                docs.append(
+                    Document(
+                        page_content=content,
+                        metadata={"source": str(file_path)},
+                    )
+                )
+        else:
+            content = json.dumps(data, ensure_ascii=False, indent=2)
+            docs.append(
+                Document(
+                    page_content=content,
+                    metadata={"source": str(file_path)},
+                )
+            )
+        
+        return docs
+
         
 
     def _load_documents(self, allowed_extensions: list[str] | None = None):
@@ -48,10 +83,13 @@ class IngestionPipeline:
         if not self.doc_dir.exists():
             raise FileNotFoundError(f'Path "{self.doc_dir}" does not exist')
 
+        all_supported_ext = set(FILE_LOADERS.keys()) | {".json"}
+
         if allowed_extensions:
-            valid_ext = {ext.lower() if ext.startswith(".") else f".{ext}" for ext in allowed_extensions}
+            user_ext = {ext.lower() if ext.startswith(".") else f".{ext}" for ext in allowed_extensions}
+            valid_ext = user_ext & all_supported_ext  # Only keep extensions that are actually supported
         else:
-            valid_ext = set(FILE_LOADERS.keys())
+            valid_ext = all_supported_ext
 
         docs = []
         failed_files = []
@@ -60,16 +98,22 @@ class IngestionPipeline:
             if file_path.is_file():
                 extension = file_path.suffix.lower()
 
-                if extension in FILE_LOADERS and extension in valid_ext:
-                    loader_class = FILE_LOADERS[extension]
-
+                if extension in valid_ext:
                     try:
-                        if extension in [".txt", ".md",".csv"]:
-                            loader = loader_class(str(file_path), encoding="utf-8")
-                        else:
-                            loader = loader_class(str(file_path))
+                        if extension == ".json":
+                            json_docs = self._json_loader(file_path)
+                            docs.extend(json_docs)
 
-                        docs.extend(loader.load())
+                            
+                        elif extension in FILE_LOADERS:
+                            
+                            loader_class = FILE_LOADERS[extension]
+                            if extension in [".txt", ".md", ".csv"]:
+                                loader = loader_class(str(file_path), encoding="utf-8")
+                            else:
+                                loader = loader_class(str(file_path))
+
+                            docs.extend(loader.load())
 
                     except Exception as e:
                         failed_files.append(file_path.name)
@@ -108,15 +152,35 @@ class IngestionPipeline:
 
 
     def _chunk_documents(self,docs):
+        """
+        Splits documents into smaller chunks for embedding and retrieval.
+        
+        JSON files are kept as whole documents to preserve their structure.
+        Other document types (PDF, TXT, etc.) are split using RecursiveCharacterTextSplitter
+        with configurable chunk size and overlap to maintain context between chunks.
+        This ensures text documents are not too large for embedding models while
+        preserving semantic meaning through chunk overlap.
+        """
+        
+        final_chunks = []
+        text_docs = []
 
         text_splitter = RecursiveCharacterTextSplitter(chunk_size = self.chunk_size,
                                                     chunk_overlap = self.chunk_overlap,     # helps model keep the meaning
                                                     separators=["\n\n","\n",". ", " ", ""]
                                                     )
 
-        chunks = text_splitter.split_documents(docs)
+        for doc in docs:
+            if doc.metadata.get("source", "").lower().endswith(".json"):
+                final_chunks.append(doc)
+            else:
+                text_docs.append(doc)
 
-        return chunks
+        if text_docs:
+            text_chunks = text_splitter.split_documents(text_docs)
+            final_chunks.extend(text_chunks)
+
+        return final_chunks
 
 
     def _create_vector_store(self, chunks):
@@ -184,7 +248,7 @@ class IngestionPipeline:
             return f'Letters: {len(doc.page_content)}, Words: {len(doc.page_content.split())}, MetaData: {doc.metadata}'
 
 
-    def run(self, verbose = True, preview_n_chunks = 0, allowed_extensions = None):
+    def run(self, verbose=True, preview_n_chunks=0, allowed_extensions: list[str] | None = None):
 
         if verbose:
             print("🚀 [1/3] Loading documents...")
@@ -215,5 +279,5 @@ class IngestionPipeline:
 if __name__ == "__main__":
     pipeline = IngestionPipeline()
 
-    vdb = pipeline.run(preview_n_chunks=30)
+    vdb = pipeline.run(preview_n_chunks=30,allowed_extensions=['.csv'])
 
