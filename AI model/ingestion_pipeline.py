@@ -2,21 +2,24 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from langchain_community.document_loaders import (
-    CSVLoader,
+    UnstructuredWordDocumentLoader,   
     PyMuPDFLoader,
     TextLoader,
-    UnstructuredWordDocumentLoader,   
+    CSVLoader,
 )
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter      # for chunking
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma     # for vector DB
 from langchain_core.documents import Document
+from langchain_chroma import Chroma     # for vector DB
 
+from rank_bm25 import BM25Okapi
 from pathlib import Path
 import openpyxl
 import shutil
+import pickle
 import json
+import re
 
 
 FILE_LOADERS = {
@@ -31,18 +34,22 @@ FILE_LOADERS = {
 class IngestionPipeline:
 
     def __init__(self,
-                 docs_dir=Path(__file__).resolve().parent / "docs",
-                 db_dir=Path(__file__).resolve().parent / "db" / "chroma_db",
                  embedding_model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-                 chunk_size=800,
+                 db_dir=Path(__file__).resolve().parent / "storage" / "db" / "chroma_db",
+                 bm25_dir = Path(__file__).resolve().parent / "storage" / "bm25_data.pkl",
+                 docs_dir=Path(__file__).resolve().parent / "docs",
                  chunk_overlap=130,
+                 chunk_size=800
                  ):
         
         self.doc_dir = Path(docs_dir)
         self.db_dir = Path(db_dir)
+        self.bm25_dir = Path(bm25_dir)
+
         self.embedding_model_name = embedding_model_name
-        self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.chunk_size = chunk_size
+        self.chunked_files = []
         self.chunks = []
 
 
@@ -199,6 +206,11 @@ class IngestionPipeline:
                 + ", ".join(sorted(empty_pdf_files)) +
                 ".\nTry to use PDF files that not scanned."
             )
+            
+            docs = [
+                doc for doc in docs
+                if Path(doc.metadata.get("source", "")).name not in empty_pdf_files
+            ]
 
         return docs
 
@@ -227,8 +239,10 @@ class IngestionPipeline:
             source = str(doc.metadata.get("source", "")).lower()
             if source.endswith((".json", ".csv", ".xlsx", ".xls")):
                 final_chunks.append(doc)
+                self.chunked_files.append(doc.metadata['source'])
             else:
                 text_docs.append(doc)
+                self.chunked_files.append(doc.metadata['source'])
 
         if text_docs:
             text_chunks = text_splitter.split_documents(text_docs)
@@ -295,21 +309,31 @@ class IngestionPipeline:
             print("-" * 50)
 
 
-    def get_doc_info(self,doc):
-            '''
-            return additional informations about file
-            '''
-            return f'Letters: {len(doc.page_content)}, Words: {len(doc.page_content.split())}, MetaData: {doc.metadata}'
+    def _create_bm25_index(self,chunks):
+        """Tokenize document chunks and save BM25 index for keyword-based retrieval.
+        
+        Args:
+            chunks: List of document chunks to tokenize
+        """
+        raw_text = [doc.page_content for doc in chunks]
+
+        tokenized_chunks = [doc.lower().split() for doc in raw_text]
+        bm25 = BM25Okapi(tokenized_chunks)
+
+        self.bm25_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(self.bm25_dir,"wb") as file:
+            pickle.dump({"raw_text":raw_text, "bm25":bm25}, file)
 
 
     def run(self, verbose=True, preview_n_chunks=0, allowed_extensions: list[str] | None = None):
 
         if verbose:
-            print("🚀 [1/3] Loading documents...")
+            print("🚀 [1/4] Loading documents...")
         docs = self._load_documents(allowed_extensions = allowed_extensions)
 
         if verbose:
-            print(f"✂️ [2/3] Chunking {len(docs)} document(s)...")
+            print(f"✂️ [2/4] Chunking {len(docs)} document(s)...")
         chunks = self._chunk_documents(docs)
         self.chunks = chunks
         
@@ -317,21 +341,23 @@ class IngestionPipeline:
             self.preview_chunks(chunks,limit = preview_n_chunks)
 
         if verbose:
-            print(f"💾 [3/3] Embedding & saving {len(chunks)} chunks to Chroma DB...")
+            print(f"💾 [3/4] Embedding & saving {len(chunks)} chunks to Chroma DB...")
         vector_store = self._create_vector_store(chunks)
+
+        if verbose:
+            print("💿 [4/4] creating bm25 indexing...")
+        self._create_bm25_index(self.chunks)
 
 
         if verbose:
             print("✅ Ingestion Pipeline completed successfully!")
+            print(f"chunked files:\n{set(m.group() for path in self.chunked_files if (m := re.search(r'[^/\\]+$', path)))}")
+
 
         return vector_store
-
-
-
 
 
 if __name__ == "__main__":
     pipeline = IngestionPipeline()
 
-    vdb = pipeline.run(preview_n_chunks=30,allowed_extensions=['.pdf'])
-
+    vdb = pipeline.run(preview_n_chunks=60)
