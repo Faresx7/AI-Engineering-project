@@ -36,7 +36,7 @@ class IngestionPipeline:
     def __init__(self,
                  embedding_model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
                  db_dir=Path(__file__).resolve().parent / "storage" / "db" / "chroma_db",
-                 bm25_dir = Path(__file__).resolve().parent / "storage" / "bm25_data.pkl",
+                 bm25_dir = Path(__file__).resolve().parent / "storage" / "bm25_index.pkl",
                  docs_dir=Path(__file__).resolve().parent / "docs",
                  chunk_overlap=130,
                  chunk_size=800
