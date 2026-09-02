@@ -22,6 +22,9 @@ import json
 import re
 
 
+from retrieval_pipeline import Retrieval
+
+
 FILE_LOADERS = {
     ".txt": TextLoader,
     ".pdf": PyMuPDFLoader,
@@ -317,7 +320,7 @@ class IngestionPipeline:
         """
         raw_text = [doc.page_content for doc in chunks]
 
-        tokenized_chunks = [doc.lower().split() for doc in raw_text]
+        tokenized_chunks = [Retrieval.tokenize_and_remove_stopwords(doc) for doc in raw_text]
         bm25 = BM25Okapi(tokenized_chunks)
 
         self.bm25_dir.parent.mkdir(parents=True, exist_ok=True)
