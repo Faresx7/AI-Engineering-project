@@ -3,13 +3,26 @@ from langchain_chroma import Chroma
 from pathlib import Path
 import pickle
 
+import string
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+
+
+nltk.download("punkt", quiet= True)
+nltk.download("stopwords", quiet= True)
+
+
 
 class Retrieval:
 
+    STOP_WORDS = set(stopwords.words("english"))
+    PUNCTUATION_SET = set(string.punctuation)
     def __init__(self,
                 embedding_model_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
                 persist_dir = Path(__file__).resolve().parent / "storage" / "db" /"chroma_db",
                 bm25_dir = Path(__file__).resolve().parent / "storage" / "bm25_index.pkl",
+                vector_threshold = .2,
                 k_chunks = 3
                  ):
         """
@@ -26,7 +39,6 @@ class Retrieval:
         """
         
         print("🔄 Initializing RAG Service & Loading Embeddings...")
-    
         self.embedding_model = HuggingFaceEmbeddings(model_name=embedding_model_name)
         self.db = Chroma(persist_directory= str(persist_dir),
                         embedding_function= self.embedding_model,
@@ -37,7 +49,7 @@ class Retrieval:
         self.retriever = self.db.as_retriever(
                                                 search_type = "similarity_score_threshold",
                                                 search_kwargs = {"k":k_chunks,
-                                                                "score_threshold":.4},     # retrieve the top 3 chunks
+                                                                "score_threshold":vector_threshold},     # retrieve the top 3 chunks
                                                 )
 
         self.bm25_dir = bm25_dir
@@ -54,6 +66,22 @@ class Retrieval:
 
         print('Rag system is Ready!✅')
 
+    @classmethod
+    def tokenize_and_remove_stopwords(cls, text: str) -> list[str]:
+        """Tokenizes text, removes punctuation and stopwords using NLTK."""
+
+        text = text.lower()
+        tokens = word_tokenize(text)
+
+
+        cleaned_tokens = [
+            word
+            for word in tokens
+            if word not in cls.STOP_WORDS and word not in cls.PUNCTUATION_SET
+        ]
+
+        return cleaned_tokens
+
 
     def _bm25_index_retriever(self, prompt: str) -> list[str]:
         """Retrieves top matching documents using BM25 with score filtering,
@@ -61,7 +89,7 @@ class Retrieval:
         if not self.bm25:
             return []
 
-        tokenized_prompt = prompt.lower().split()
+        tokenized_prompt = self.tokenize_and_remove_stopwords(prompt)
         scores = self.bm25.get_scores(tokenized_prompt)
 
         # Pair each document text with its score
