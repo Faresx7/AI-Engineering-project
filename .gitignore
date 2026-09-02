@@ -4,5 +4,6 @@ venv
 *.jpg
 *.txt
 __pycache__
-db
+storage
 docs
+todo.md
