@@ -1,13 +1,12 @@
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-from contextlib import asynccontextmanager
+from fastapi import APIRouter, BackgroundTasks, Request, Response
 from dotenv import load_dotenv
-import asyncio
-import uvicorn
-import httpx
 import os
 
-import src.core.security as sec
+
+import src.core.http_client as hc
 import src.core.cache as cache
+import src.core.security as sec
+
 # ─────────────────────────────────────────────
 # Setup & Config
 # ─────────────────────────────────────────────
@@ -29,27 +28,19 @@ if not APP_SECRET:
 # ─────────────────────────────────────────────
 messages_cache = cache.MessageCache(max_size=7000)
 
-
 # ─────────────────────────────────────────────
-# Lifespan
+# Router
 # ─────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.send_semaphore = asyncio.Semaphore(10)
-    app.state.client = httpx.AsyncClient(timeout=10)
-    yield
-    await app.state.client.aclose()
+router = APIRouter(
+    prefix="/webhook/instagram",
+    tags=["Instagram"],
+)
 
-
-app = FastAPI(lifespan=lifespan)
 
 # ─────────────────────────────────────────────
 # HTTPX Async Helpers
 # ─────────────────────────────────────────────
-#! DRY
-async def send_auto_reply(
-    recipient_id: str, text_message: str, retries: int = 3
-):
+async def send_auto_reply(recipient_id: str, text_message: str, retries: int = 3):
     """Send automated reply via Meta Graph API with retry logic and backoff."""
     reply_url = "https://graph.instagram.com/v26.0/me/messages"
     headers = {"Authorization": f"Bearer {PAGE_ACCESS_TOKEN}"}
@@ -58,56 +49,22 @@ async def send_auto_reply(
         "message": {"text": text_message},
     }
 
-    client = app.state.client
-    semaphore = app.state.send_semaphore
-    async with semaphore:
-        for attempt in range(1, retries + 1):
-            try:
-                response = await client.post(
-                    reply_url, headers=headers, json=json_data
-                )
-
-                if response.status_code == 200:
-                    print(
-                        f"[REPLY SUCCESS] Status: 200 | Response: {response.json()}"
-                    )
-                    break  # Stop retry loop immediately on success
-
-                print(
-                    f"[REPLY ERROR] Attempt {attempt}/{retries} | Status: {response.status_code} | Body: {response.json()}"
-                )
-
-            except Exception as err:
-                print(
-                    f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}"                )
-
-            if attempt < retries:
-                await asyncio.sleep(1)
+    await hc.send_with_retry(reply_url, headers, json_data, retries=retries)
 
 
 async def get_message_by_mid(message_id: str) -> dict:
     """Fetch message details using its mid via Meta Graph API."""
+    if hc.http_client is None:
+        print("[ERROR] http_client not initialized yet!")
+        return {}
+
     url = f"https://graph.instagram.com/v26.0/{message_id}"
     params = {
         "fields": "message",
         "access_token": PAGE_ACCESS_TOKEN,
     }
 
-    try:
-        client = app.state.client
-        response = await client.get(url, params=params)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(
-                f"[FETCH ERROR] Status: {response.status_code} | Body: {response.json()}"
-            )
-            return {}
-
-    except Exception as err:
-        print(f"[REQUEST FAILED]: {err}")
-        return {}
+    return await hc.get_message_by_mid(url, params) or {}
 
 
 # ─────────────────────────────────────────────
@@ -121,7 +78,7 @@ async def process_webhook_payload(payload: dict):
             messaging_events = entry.get("messaging", [])
 
             for event in messaging_events:
-                # 1. ignore read events
+                # 1. Ignore read/delivery events
                 if "read" in event or "delivery" in event:
                     continue
 
@@ -133,31 +90,30 @@ async def process_webhook_payload(payload: dict):
                 mid = message_data.get("mid")
                 text = message_data.get("text")
 
+                # 2. Duplicate delivery protection
                 if mid and messages_cache.has(mid):
                     print(f"[DUPLICATE] Skipping already-processed message {mid}")
                     continue
 
-                # Cache incoming message ID regardless of text presence
+                # Cache incoming message regardless of text presence
                 if mid:
                     messages_cache.add(mid, text or "[NON_TEXT_MESSAGE]")
 
-                # 2. Extract Ad Referral Data (Click to Instagram Direct Ads)
-                referral = message_data.get("referral") or event.get(
-                    "referral", {}
-                )
+                # 3. Extract Ad Referral Data (Click to Instagram Direct Ads)
+                referral = message_data.get("referral") or event.get("referral", {})
                 if referral:
                     ad_id = referral.get("ad_id")
                     headline = referral.get("headline", "N/A")
                     body = referral.get("body", "N/A")
                     image_url = referral.get("image_url", "N/A")
 
-                    print(f"\n[AD REFERRAL DETECTED]")
+                    print("\n[AD REFERRAL DETECTED]")
                     print(f" - Ad ID: {ad_id}")
                     print(f" - Headline: {headline}")
                     print(f" - Body: {body}")
                     print(f" - Image URL: {image_url}\n")
 
-                # 3. Extract Reply Context
+                # 4. Extract Reply Context
                 reply_to = message_data.get("reply_to") or {}
                 story_url = reply_to.get("story", {}).get("url")
                 replied_mid = reply_to.get("mid")
@@ -173,14 +129,11 @@ async def process_webhook_payload(payload: dict):
 
                     print(f"[REPLY TO] {original_text}")
 
-                # 4. Dispatch Auto Reply
+                # 5. Dispatch Auto Reply
                 sender_id = event.get("sender", {}).get("id")
                 if text and sender_id:
-                    if text == "e":
-                        print(f"[NEW MESSAGE] {text}")
-                    else:
-                        print(f"[NEW MESSAGE] {text}")
-                        await send_auto_reply(sender_id, text)
+                    print(f"[NEW MESSAGE] {text}")
+                    await send_auto_reply(sender_id, text)
 
     except Exception as err:
         print(f"[EXCEPTIONAL ERROR]: {err}")
@@ -189,7 +142,7 @@ async def process_webhook_payload(payload: dict):
 # ─────────────────────────────────────────────
 # Routes
 # ─────────────────────────────────────────────
-@app.get("/webhook")
+@router.get("")
 async def verify_webhook(request: Request):
     """Webhook verification endpoint for Meta."""
     mode = request.query_params.get("hub.mode")
@@ -198,23 +151,21 @@ async def verify_webhook(request: Request):
 
     if mode == "subscribe" and token == VERIFY_TOKEN:
         print("\n[SUCCESS] Webhook verified successfully by Meta!")
-        return Response(
-            content=challenge, media_type="text/plain", status_code=200
-        )
+        return Response(content=challenge, media_type="text/plain", status_code=200)
 
     print("\n[ERROR] Verification failed.")
     return Response(content="Verification failed", status_code=403)
 
 
-@app.post("/webhook")
-async def receive_webhook(
-    request: Request, background_tasks: BackgroundTasks
-):
+@router.post("")
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receive and validate incoming webhook payload."""
     raw_body = await request.body()
 
     signature = request.headers.get("X-Hub-Signature-256", "")
-    if not sec.verify_signature(raw_body=raw_body, signature_header=signature,APP_SECRET=APP_SECRET):
+    if not sec.verify_signature(
+        raw_body=raw_body, signature_header=signature, APP_SECRET=APP_SECRET
+    ):
         print("[SECURITY] Invalid signature — request rejected.")
         return Response(content="Invalid signature", status_code=403)
 
@@ -227,7 +178,3 @@ async def receive_webhook(
     print("\n================ [NEW WEBHOOK EVENT] ================")
     background_tasks.add_task(process_webhook_payload, payload)
     return {"status": "EVENT_RECEIVED"}
-
-
-if __name__ == "__main__":
-    uvicorn.run("routes.instagram:app", reload=True, host="127.0.0.1", port=8000)
