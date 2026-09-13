@@ -1,17 +1,22 @@
-import asyncio
+from fastapi import BackgroundTasks, FastAPI, Request, Response
+from contextlib import asynccontextmanager
 from collections import OrderedDict
+from dotenv import load_dotenv
+import asyncio
 import hashlib
+import uvicorn
+import httpx
 import hmac
 import os
-from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-import httpx
-import uvicorn
+
+
+
+
+#* add duplicate message checker 
 
 # ─────────────────────────────────────────────
 # Setup & Config
 # ─────────────────────────────────────────────
-app = FastAPI()
 load_dotenv()
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
@@ -25,13 +30,29 @@ if not PAGE_ACCESS_TOKEN:
 if not APP_SECRET:
     raise ValueError("APP_SECRET not set in .env")
 
+
+
+
+# ─────────────────────────────────────────────
+# Lifespan
+# ─────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.send_semaphore = asyncio.Semaphore(10)
+    app.state.client = httpx.AsyncClient(timeout=10)
+    yield
+    await app.state.client.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
+
 # ─────────────────────────────────────────────
 # LRU Cache Setup
 # ─────────────────────────────────────────────
 MAX_CACHE = 1200
 messages_cache = OrderedDict()
 
-
+#! DRY
 def cache_message(mid: str, text: str):
     """Store message in LRU cache and evict oldest if limit is exceeded."""
     messages_cache[mid] = text
@@ -42,6 +63,7 @@ def cache_message(mid: str, text: str):
 # ─────────────────────────────────────────────
 # Signature verification
 # ─────────────────────────────────────────────
+#! DRY
 def verify_signature(raw_body: bytes, signature_header: str) -> bool:
     """Verify payload authenticity using Meta App Secret HMAC-SHA256."""
     if not signature_header or not signature_header.startswith("sha256="):
@@ -55,6 +77,7 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
 # ─────────────────────────────────────────────
 # HTTPX Async Helpers
 # ─────────────────────────────────────────────
+#! DRY
 async def send_auto_reply(
     recipient_id: str, text_message: str, retries: int = 3
 ):
@@ -66,7 +89,9 @@ async def send_auto_reply(
         "message": {"text": text_message},
     }
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    client = app.state.client
+    semaphore = app.state.send_semaphore
+    async with semaphore:
         for attempt in range(1, retries + 1):
             try:
                 response = await client.post(
@@ -85,8 +110,7 @@ async def send_auto_reply(
 
             except Exception as err:
                 print(
-                    f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}"
-                )
+                    f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}"                )
 
             if attempt < retries:
                 await asyncio.sleep(1)
@@ -101,16 +125,16 @@ async def get_message_by_mid(message_id: str) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(url, params=params)
+        client = app.state.client
+        response = await client.get(url, params=params)
 
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(
-                    f"[FETCH ERROR] Status: {response.status_code} | Body: {response.json()}"
-                )
-                return {}
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(
+                f"[FETCH ERROR] Status: {response.status_code} | Body: {response.json()}"
+            )
+            return {}
 
     except Exception as err:
         print(f"[REQUEST FAILED]: {err}")
@@ -128,9 +152,8 @@ async def process_webhook_payload(payload: dict):
             messaging_events = entry.get("messaging", [])
 
             for event in messaging_events:
-                # 1. Silently ignore read events without printing
-                if "read" in event:
-                    print("[READ EVENT]")
+                # 1. ignore read events
+                if "read" in event or "delivery" in event:
                     continue
 
                 message_data = event.get("message")
@@ -141,9 +164,13 @@ async def process_webhook_payload(payload: dict):
                 mid = message_data.get("mid")
                 text = message_data.get("text")
 
-                # Cache incoming text message
-                if mid and text:
-                    cache_message(mid, text)
+                if mid and mid in messages_cache:
+                    print(f"[DUPLICATE] Skipping already-processed message {mid}")
+                    continue
+
+                # Cache incoming message ID regardless of text presence
+                if mid:
+                    cache_message(mid, text or "[NON_TEXT_MESSAGE]")
 
                 # 2. Extract Ad Referral Data (Click to Instagram Direct Ads)
                 referral = message_data.get("referral") or event.get(
@@ -180,8 +207,11 @@ async def process_webhook_payload(payload: dict):
                 # 4. Dispatch Auto Reply
                 sender_id = event.get("sender", {}).get("id")
                 if text and sender_id:
-                    print(f"[NEW MESSAGE] {text}")
-                    await send_auto_reply(sender_id, text)
+                    if text == "e":
+                        print(f"[NEW MESSAGE] {text}")
+                    else:
+                        print(f"[NEW MESSAGE] {text}")
+                        await send_auto_reply(sender_id, text)
 
     except Exception as err:
         print(f"[EXCEPTIONAL ERROR]: {err}")
@@ -231,4 +261,4 @@ async def receive_webhook(
 
 
 if __name__ == "__main__":
-    uvicorn.run("fast:app", reload=True, host="127.0.0.1", port=8000)
+    uvicorn.run("instagram:app", reload=True, host="127.0.0.1", port=8000)

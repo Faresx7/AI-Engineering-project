@@ -1,12 +1,13 @@
-import asyncio
+from fastapi import BackgroundTasks, FastAPI, Request, Response
+from contextlib import asynccontextmanager
 from collections import OrderedDict
+from dotenv import load_dotenv
+import asyncio
 import hashlib
+import uvicorn
+import httpx
 import hmac
 import os
-from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-import httpx
-import uvicorn
 
 # ─────────────────────────────────────────────
 # Setup & Config
@@ -28,13 +29,12 @@ if not WHATSAPP_APP_SECRET:
     raise ValueError("WHATSAPP_APP_SECRET not set in .env")
 
 
-from contextlib import asynccontextmanager
-
 # ─────────────────────────────────────────────
 # Lifespan 
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.send_semaphore = asyncio.Semaphore(10)
     app.state.client = httpx.AsyncClient(timeout=10)
     yield
     await app.state.client.aclose()
@@ -49,7 +49,7 @@ app = FastAPI(lifespan=lifespan)
 MAX_CACHE = 1200
 messages_cache = OrderedDict()
 
-
+#! DRY
 def cache_message(mid: str, text: str):
     """Store message in LRU cache and evict oldest if limit is exceeded."""
     messages_cache[mid] = text
@@ -60,6 +60,7 @@ def cache_message(mid: str, text: str):
 # ─────────────────────────────────────────────
 # Signature verification
 # ─────────────────────────────────────────────
+#! DRY
 def verify_signature(raw_body: bytes, signature_header: str) -> bool:
     """Verify payload authenticity using Meta App Secret HMAC-SHA256."""
     if not signature_header or not signature_header.startswith("sha256="):
@@ -73,6 +74,7 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
 # ─────────────────────────────────────────────
 # HTTPX Async Helpers
 # ─────────────────────────────────────────────
+#! DRY
 async def send_auto_reply(
     recipient_phone: str, text_message: str, retries: int = 3
 ):
@@ -90,25 +92,28 @@ async def send_auto_reply(
     }
 
     client = app.state.client
-    for attempt in range(1, retries + 1):
-        try:
-            response = await client.post(
-                reply_url, headers=headers, json=json_data
-                )
 
-            if response.status_code == 200:
+    semaphore = app.state.send_semaphore
+    async with semaphore:
+        for attempt in range(1, retries + 1):
+            try:
+                response = await client.post(
+                    reply_url, headers=headers, json=json_data
+                    )
+
+                if response.status_code == 200:
+                    print(
+                        f"[REPLY SUCCESS] Status: 200 | Response: {response.json()}"
+                    )
+                    break
+
                 print(
-                    f"[REPLY SUCCESS] Status: 200 | Response: {response.json()}"
+                    f"[REPLY ERROR] Attempt {attempt}/{retries} | Status: {response.status_code} | Body: {response.json()}"
                 )
-                break
 
-            print(
-                f"[REPLY ERROR] Attempt {attempt}/{retries} | Status: {response.status_code} | Body: {response.json()}"
-            )
-
-        except Exception as err:
-            print(
-                f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}"                )
+            except Exception as err:
+                print(
+                    f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}")
 
             if attempt < retries:
                 await asyncio.sleep(1)
@@ -129,7 +134,8 @@ async def process_webhook_payload(payload: dict):
 
                 # 1. Silently skip status updates (sent, delivered, read receipts)
                 if "statuses" in value:
-                    print(f"[STATUES UPDATE]{value.get("statuses",[{}])[0].get("status")}")
+                    status = value.get("statuses", [{}])[0].get("status")
+                    print(f"[STATUS UPDATE] {status}")
                     continue
 
                 messages = value.get("messages", [])
@@ -138,14 +144,19 @@ async def process_webhook_payload(payload: dict):
                     sender_phone = msg.get("from")
                     msg_type = msg.get("type")
 
+                    # duplicated message check
+                    if msg_id and msg_id in messages_cache:
+                        print(f"[DUPLICATE] Skipping already-processed message {msg_id}")
+                        continue
+
                     # Extract text content
                     text_body = ""
                     if msg_type == "text":
                         text_body = msg.get("text", {}).get("body", "")
 
-                    # Cache incoming message text
-                    if msg_id and text_body:
-                        cache_message(msg_id, text_body)
+                    # Cache incoming message ID regardless of type to prevent duplicate processing
+                    if msg_id:
+                        cache_message(msg_id, text_body or f"[{msg_type.upper()}_MESSAGE]")
 
                     # 2. Extract Ad Referral Data (Click to WhatsApp Ads)
                     referral = msg.get("referral") or value.get("referral", {})
@@ -225,4 +236,4 @@ async def receive_webhook(
 
 
 if __name__ == "__main__":
-    uvicorn.run("fast_wts:app", reload=True, host="127.0.0.1", port=8000)
+    uvicorn.run("whatsapp:app", reload=True, host="127.0.0.1", port=8000)
