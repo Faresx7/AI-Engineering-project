@@ -184,4 +184,4 @@ You are a precise AI assistant. Answer the user's question accurately based ONLY
 {prompt}
 """
          
-        return full_prompt
+        return full_prompt, retrieved_chunks

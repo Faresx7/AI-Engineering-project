@@ -21,3 +21,11 @@ class RAGChain:
         return {"answer":answer,
                 "context":retrieved_content,
                 "final_prompt": final_prompt}
+# rc = RAGChain()
+# while True:
+#     i = input("enter you question here\n")
+#     if i == 'e':
+#         break
+#     answer = rc.answer(i)
+#     print(f"answer:\n{answer['answer']}")
+  
