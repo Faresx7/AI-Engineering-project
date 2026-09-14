@@ -1,43 +1,21 @@
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-from contextlib import asynccontextmanager
-from collections import OrderedDict
-from dotenv import load_dotenv
-import asyncio
-import uvicorn
-import httpx
-import os
+from fastapi import BackgroundTasks,APIRouter, Request, Response
+from starlette.requests import ClientDisconnect
+import json
 
-import core.security as sec
-import core.cache as cache
+from src.core.config import settings
+import src.core.http_client as hc
+import src.core.security as sec
+import src.core.cache as cache
+
+
+# * DONE['cache','verify_webhook','router','send_reply'.'separate loading tokens','safer raw_body']
+
 
 # ─────────────────────────────────────────────
-# Setup & Config
+# router
 # ─────────────────────────────────────────────
-load_dotenv()
-
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
-PAGE_ACCESS_TOKEN = os.getenv("MESSENGER_TOKEN", "").strip()
-APP_SECRET = os.getenv("MESSENGER_APP_SECRET", "").strip()
-
-if not VERIFY_TOKEN:
-    raise ValueError("VERIFY_TOKEN not set in .env")
-if not PAGE_ACCESS_TOKEN:
-    raise ValueError("MESSENGER_TOKEN not set in .env")
-if not APP_SECRET:
-    raise ValueError("MESSENGER_APP_SECRET not set in .env")
-
-# ─────────────────────────────────────────────
-# Lifespan
-# ─────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.send_semaphore = asyncio.Semaphore(10)
-    app.state.client = httpx.AsyncClient(timeout=10)
-    yield
-    await app.state.client.aclose()
-
-
-app = FastAPI(lifespan=lifespan)
+router = APIRouter(prefix="/webhook/messenger",
+                   tags=['messenger'])
 
 # ─────────────────────────────────────────────
 # Cache
@@ -47,44 +25,15 @@ messages_cache = cache.MessageCache(max_size=7000)
 # ─────────────────────────────────────────────
 # HTTPX Async Helpers
 # ─────────────────────────────────────────────
-#! DRY
-async def send_auto_reply(
-    recipient_id: str, text_message: str, retries: int = 3
-):
+async def send_auto_reply(recipient_id: str, text_message: str):
     """Send automated reply via Facebook Messenger Graph API with retry logic and backoff."""
     reply_url = "https://graph.facebook.com/v26.0/me/messages"
-    headers = {"Authorization": f"Bearer {PAGE_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {settings.MESSENGER_TOKEN.get_secret_value()}"}
     json_data = {
         "recipient": {"id": recipient_id},
         "message": {"text": text_message},
     }
-
-    client = app.state.client
-
-    semaphore = app.state.send_semaphore
-    async with semaphore:
-        for attempt in range(1, retries + 1):
-            try:
-                response = await client.post(
-                    reply_url, headers=headers, json=json_data
-                )
-
-                if response.status_code == 200:
-                    print(
-                        f"[REPLY SUCCESS] Status: 200 | Response: {response.json()}"
-                    )
-                    break  # Stop retry loop immediately on success
-
-                print(
-                    f"[REPLY ERROR] Attempt {attempt}/{retries} | Status: {response.status_code} | Body: {response.json()}"
-                )
-
-            except Exception as err:
-                print(
-                    f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}"                )
-
-            if attempt < retries:
-                await asyncio.sleep(1)
+    await hc.send_with_retry(reply_url,headers,json_data)
 
 
 async def get_message_by_mid(message_id: str) -> dict:
@@ -92,24 +41,11 @@ async def get_message_by_mid(message_id: str) -> dict:
     url = f"https://graph.facebook.com/v26.0/{message_id}"
     params = {
         "fields": "message",
-        "access_token": PAGE_ACCESS_TOKEN,
+        "access_token": settings.MESSENGER_TOKEN.get_secret_value(),
     }
 
-    try:
-        client = app.state.client
-        response = await client.get(url, params=params)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(
-                    f"[FETCH ERROR] Status: {response.status_code} | Body: {response.json()}"
-            )
-            return {}
-
-    except Exception as err:
-        print(f"[REQUEST FAILED]: {err}")
-        return {}
-
+    return await hc.get_message_by_mid(url, params) or {}
+                        
 
 # ─────────────────────────────────────────────
 # Core Webhook Processing Logic
@@ -142,10 +78,10 @@ async def process_webhook_payload(payload: dict):
                     messages_cache.add(mid, text or "[NON_TEXT_MESSAGE]")
                 # 2. Extract Ad Referral Data (Click-to-Messenger Ads)
                 referral = (
-                    event.get("referral")
-                    or event.get("postback", {}).get("referral")
-                    or message_data.get("referral")
-                )
+                            event.get("referral")
+                            or event.get("postback", {}).get("referral")
+                            or message_data.get("referral")
+                        )
                 if referral:
                     ref_code = referral.get("ref", "N/A")
                     ad_id = referral.get("ad_id", "N/A")
@@ -184,37 +120,32 @@ async def process_webhook_payload(payload: dict):
 # ─────────────────────────────────────────────
 # Routes
 # ─────────────────────────────────────────────
-@app.get("/webhook")
+@router.get("")
 async def verify_webhook(request: Request):
     """Webhook verification endpoint for Facebook Messenger."""
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
-
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        print("\n[SUCCESS] Messenger Webhook verified successfully by Meta!")
-        return Response(
-            content=challenge, media_type="text/plain", status_code=200
-        )
-
-    print("\n[ERROR] Verification failed.")
-    return Response(content="Verification failed", status_code=403)
+    return sec.verify_webhooks(request, settings.VERIFY_TOKEN)
 
 
-@app.post("/webhook")
+@router.post("")
 async def receive_webhook(
     request: Request, background_tasks: BackgroundTasks
 ):
     """Receive and validate incoming Facebook Messenger webhook payload."""
-    raw_body = await request.body()
+    try:
+        raw_body = await request.body()
+    
+    except ClientDisconnect:
+        print("[ERROR] Client disconnected before body was fully received.")
+        return Response(content="Client disconnected", status_code=400)
 
     signature = request.headers.get("X-Hub-Signature-256", "")
-    if not sec.verify_signature(raw_body, signature,APP_SECRET):
+    if not sec.verify_signature(raw_body, signature,settings.MESSENGER_APP_SECRET.get_secret_value()):
         print("[SECURITY] Invalid signature — request rejected.")
         return Response(content="Invalid signature", status_code=403)
 
     try:
-        payload = await request.json()
+        payload = json.loads(raw_body)
+    
     except Exception:
         print("[ERROR] Failed to parse JSON payload.")
         return Response(content="Bad request", status_code=400)
@@ -222,7 +153,3 @@ async def receive_webhook(
     print("\n================ [NEW MESSENGER EVENT] ================")
     background_tasks.add_task(process_webhook_payload, payload)
     return {"status": "EVENT_RECEIVED"}
-
-
-if __name__ == "__main__":
-    uvicorn.run("fast_m:app", reload=True, host="127.0.0.1", port=8000)

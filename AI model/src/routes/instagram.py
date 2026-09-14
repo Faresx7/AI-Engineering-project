@@ -1,27 +1,11 @@
 from fastapi import APIRouter, BackgroundTasks, Request, Response
-from dotenv import load_dotenv
-import os
+from starlette.requests import ClientDisconnect
+import json
 
-
+from src.core.config import settings
 import src.core.http_client as hc
-import src.core.cache as cache
 import src.core.security as sec
-
-# ─────────────────────────────────────────────
-# Setup & Config
-# ─────────────────────────────────────────────
-load_dotenv()
-
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
-PAGE_ACCESS_TOKEN = os.getenv("INSTAGRAM_TOKEN", "").strip()
-APP_SECRET = os.getenv("APP_SECRET", "").strip()
-
-if not VERIFY_TOKEN:
-    raise ValueError("VERIFY_TOKEN not set in .env")
-if not PAGE_ACCESS_TOKEN:
-    raise ValueError("INSTAGRAM_TOKEN not set in .env")
-if not APP_SECRET:
-    raise ValueError("APP_SECRET not set in .env")
+import src.core.cache as cache
 
 # ─────────────────────────────────────────────
 # Cache
@@ -36,14 +20,13 @@ router = APIRouter(
     tags=["Instagram"],
 )
 
-
 # ─────────────────────────────────────────────
 # HTTPX Async Helpers
 # ─────────────────────────────────────────────
 async def send_auto_reply(recipient_id: str, text_message: str, retries: int = 3):
     """Send automated reply via Meta Graph API with retry logic and backoff."""
     reply_url = "https://graph.instagram.com/v26.0/me/messages"
-    headers = {"Authorization": f"Bearer {PAGE_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {settings.INSTAGRAM_TOKEN.get_secret_value()}"}
     json_data = {
         "recipient": {"id": recipient_id},
         "message": {"text": text_message},
@@ -61,10 +44,15 @@ async def get_message_by_mid(message_id: str) -> dict:
     url = f"https://graph.instagram.com/v26.0/{message_id}"
     params = {
         "fields": "message",
-        "access_token": PAGE_ACCESS_TOKEN,
+        "access_token": settings.INSTAGRAM_TOKEN.get_secret_value(),
     }
 
-    return await hc.get_message_by_mid(url, params) or {}
+    message_text = await hc.get_message_by_mid(url, params)
+    if not isinstance(message_text, dict):
+        
+        return {}
+
+    return message_text
 
 
 # ─────────────────────────────────────────────
@@ -78,7 +66,7 @@ async def process_webhook_payload(payload: dict):
             messaging_events = entry.get("messaging", [])
 
             for event in messaging_events:
-                # 1. Ignore read/delivery events
+                # Ignore read/delivery events
                 if "read" in event or "delivery" in event:
                     continue
 
@@ -90,7 +78,7 @@ async def process_webhook_payload(payload: dict):
                 mid = message_data.get("mid")
                 text = message_data.get("text")
 
-                # 2. Duplicate delivery protection
+                # Duplicate delivery protection
                 if mid and messages_cache.has(mid):
                     print(f"[DUPLICATE] Skipping already-processed message {mid}")
                     continue
@@ -99,7 +87,7 @@ async def process_webhook_payload(payload: dict):
                 if mid:
                     messages_cache.add(mid, text or "[NON_TEXT_MESSAGE]")
 
-                # 3. Extract Ad Referral Data (Click to Instagram Direct Ads)
+                # Extract Ad Referral Data (Click to Instagram Direct Ads)
                 referral = message_data.get("referral") or event.get("referral", {})
                 if referral:
                     ad_id = referral.get("ad_id")
@@ -113,7 +101,7 @@ async def process_webhook_payload(payload: dict):
                     print(f" - Body: {body}")
                     print(f" - Image URL: {image_url}\n")
 
-                # 4. Extract Reply Context
+                # Extract Reply Context
                 reply_to = message_data.get("reply_to") or {}
                 story_url = reply_to.get("story", {}).get("url")
                 replied_mid = reply_to.get("mid")
@@ -129,7 +117,7 @@ async def process_webhook_payload(payload: dict):
 
                     print(f"[REPLY TO] {original_text}")
 
-                # 5. Dispatch Auto Reply
+                # Dispatch Auto Reply
                 sender_id = event.get("sender", {}).get("id")
                 if text and sender_id:
                     print(f"[NEW MESSAGE] {text}")
@@ -145,36 +133,34 @@ async def process_webhook_payload(payload: dict):
 @router.get("")
 async def verify_webhook(request: Request):
     """Webhook verification endpoint for Meta."""
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
-
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        print("\n[SUCCESS] Webhook verified successfully by Meta!")
-        return Response(content=challenge, media_type="text/plain", status_code=200)
-
-    print("\n[ERROR] Verification failed.")
-    return Response(content="Verification failed", status_code=403)
+    return sec.verify_webhooks(request, settings.VERIFY_TOKEN)
 
 
 @router.post("")
 async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receive and validate incoming webhook payload."""
-    raw_body = await request.body()
+    try:
+        raw_body = await request.body()
+    except ClientDisconnect:
+        print("[ERROR] Client disconnected before body was fully received.")
+        return Response(content="Client disconnected", status_code=400)
 
     signature = request.headers.get("X-Hub-Signature-256", "")
     if not sec.verify_signature(
-        raw_body=raw_body, signature_header=signature, APP_SECRET=APP_SECRET
-    ):
+        raw_body=raw_body,
+        signature_header=signature,
+        APP_SECRET=settings.APP_SECRET.get_secret_value()
+                                ):
+        
         print("[SECURITY] Invalid signature — request rejected.")
         return Response(content="Invalid signature", status_code=403)
 
     try:
-        payload = await request.json()
+        payload = json.loads(raw_body)
     except Exception:
         print("[ERROR] Failed to parse JSON payload.")
         return Response(content="Bad request", status_code=400)
 
-    print("\n================ [NEW WEBHOOK EVENT] ================")
+    print("\n================ [NEW INSTAGRAM EVENT] ================")
     background_tasks.add_task(process_webhook_payload, payload)
     return {"status": "EVENT_RECEIVED"}

@@ -7,12 +7,12 @@ send_semaphore = asyncio.Semaphore(10)
 
 async def send_with_retry(
     url: str, headers: dict, json_data: dict, retries: int = 3
-) -> dict | None:
+                        ) -> dict | None:
     
     if http_client is None:
         print("[ERROR] http_client not initialized yet!")
         return None
-    
+
     async with send_semaphore:
         for attempt in range(1, retries + 1):
             try:
@@ -29,7 +29,7 @@ async def send_with_retry(
     return None
 
 
-async def get_message_by_mid(url: str, params):
+async def get_message_by_mid(url: str, params: dict):
     if http_client is None:
             print("[ERROR] http_client not initialized yet!")
             return None

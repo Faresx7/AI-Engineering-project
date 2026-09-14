@@ -1,66 +1,33 @@
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-from contextlib import asynccontextmanager
-from collections import OrderedDict
-from dotenv import load_dotenv
-import asyncio
-import uvicorn
-import httpx
-import os
+from fastapi import BackgroundTasks, APIRouter, Request, Response
+from starlette.requests import ClientDisconnect
+import json
 
-import core.security as sec
-import core.cache as cache
+from src.core.config import settings
+import src.core.http_client as hc
+import src.core.security as sec
+import src.core.cache as cache
 
 # ─────────────────────────────────────────────
-# Setup & Config
+# Router 
 # ─────────────────────────────────────────────
-load_dotenv()
-
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
-WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
-
-if not VERIFY_TOKEN:
-    raise ValueError("VERIFY_TOKEN not set in .env")
-if not WHATSAPP_TOKEN or WHATSAPP_TOKEN == "":
-    raise ValueError("WHATSAPP_TOKEN not set in .env")
-if not PHONE_NUMBER_ID:
-    raise ValueError("PHONE_NUMBER_ID not set in .env")
-if not WHATSAPP_APP_SECRET:
-    raise ValueError("WHATSAPP_APP_SECRET not set in .env")
-
-
-# ─────────────────────────────────────────────
-# Lifespan 
-# ─────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.send_semaphore = asyncio.Semaphore(10)
-    app.state.client = httpx.AsyncClient(timeout=10)
-    yield
-    await app.state.client.aclose()
-
-
-app = FastAPI(lifespan=lifespan)
-
+router = APIRouter(prefix="/webhook/whatsapp",
+                   tags=['whatsapp'])
 
 # ─────────────────────────────────────────────
 # Cache
 # ─────────────────────────────────────────────
-messages_cache = cache.MessageCache(max_size=7000)
+messages_cache = cache.MessageCache(max_size=15000)
 
 # ─────────────────────────────────────────────
 # HTTPX Async Helpers
 # ─────────────────────────────────────────────
-#! DRY
 async def send_auto_reply(
-    recipient_phone: str, text_message: str, retries: int = 3
-):
+    recipient_phone: str, text_message: str):
     """Send automated reply via WhatsApp Cloud API with retry logic and backoff."""
     reply_url = (
-        f"https://graph.facebook.com/v26.0/{PHONE_NUMBER_ID}/messages"
+        f"https://graph.facebook.com/v26.0/{settings.PHONE_NUMBER_ID.get_secret_value()}/messages"
     )
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    headers = {"Authorization": f"Bearer {settings.WHATSAPP_TOKEN.get_secret_value()}"}
     json_data = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -69,32 +36,7 @@ async def send_auto_reply(
         "text": {"preview_url": False, "body": text_message},
     }
 
-    client = app.state.client
-
-    semaphore = app.state.send_semaphore
-    async with semaphore:
-        for attempt in range(1, retries + 1):
-            try:
-                response = await client.post(
-                    reply_url, headers=headers, json=json_data
-                    )
-
-                if response.status_code == 200:
-                    print(
-                        f"[REPLY SUCCESS] Status: 200 | Response: {response.json()}"
-                    )
-                    break
-
-                print(
-                    f"[REPLY ERROR] Attempt {attempt}/{retries} | Status: {response.status_code} | Body: {response.json()}"
-                )
-
-            except Exception as err:
-                print(
-                    f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}")
-
-            if attempt < retries:
-                await asyncio.sleep(1)
+    return await hc.send_with_retry(reply_url, headers, json_data)
 
 
 # ─────────────────────────────────────────────
@@ -168,47 +110,35 @@ async def process_webhook_payload(payload: dict):
 # ─────────────────────────────────────────────
 # Routes
 # ─────────────────────────────────────────────
-@app.get("/webhook")
+@router.get("")
 async def verify_webhook(request: Request):
     """Webhook verification endpoint for WhatsApp Meta."""
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
-    print(
-        f"\n[VERIFY TRY] Token from Meta: '{token}' | Expected: '{VERIFY_TOKEN}'"
-    )
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        print("\n[SUCCESS] Webhook verified successfully by Meta!")
-        return Response(
-            content=challenge, media_type="text/plain", status_code=200
-        )
-
-    print("\n[ERROR] Verification failed.")
-    return Response(content="Verification failed", status_code=403)
+    return sec.verify_webhooks(request, settings.VERIFY_TOKEN)
 
 
-@app.post("/webhook")
+@router.post("")
 async def receive_webhook(
     request: Request, background_tasks: BackgroundTasks
 ):
     """Receive and validate incoming webhook payload."""
-    raw_body = await request.body()
+    try:
+        raw_body = await request.body()
+        
+    except ClientDisconnect:
+        print("[ERROR] Client disconnected before body was fully received.")
+        return Response(content="Client disconnected", status_code=400)
 
     signature = request.headers.get("X-Hub-Signature-256", "")
-    if not sec.verify_signature(raw_body, signature, WHATSAPP_APP_SECRET):
+    if not sec.verify_signature(raw_body, signature, settings.WHATSAPP_APP_SECRET.get_secret_value()):
         print("[SECURITY] Invalid signature — request rejected.")
         return Response(content="Invalid signature", status_code=403)
 
     try:
-        payload = await request.json()
+        payload = json.loads(raw_body)
     except Exception:
         print("[ERROR] Failed to parse JSON payload.")
         return Response(content="Bad request", status_code=400)
 
-    print("\n================ [NEW WEBHOOK EVENT] ================")
+    print("\n================ [NEW WHATSAPP EVENT] ================")
     background_tasks.add_task(process_webhook_payload, payload)
     return {"status": "EVENT_RECEIVED"}
-
-
-if __name__ == "__main__":
-    uvicorn.run("whatsapp:app", reload=True, host="127.0.0.1", port=8000)

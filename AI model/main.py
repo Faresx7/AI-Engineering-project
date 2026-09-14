@@ -3,8 +3,7 @@ from fastapi import FastAPI
 import httpx
 from src.core import http_client as http_client_module
 import uvicorn
-from src.routes import instagram
-# , messenger, whatsapp
+from src.routes import instagram, messenger, whatsapp
 
 
 @asynccontextmanager
@@ -17,8 +16,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 app.include_router(instagram.router)
-# app.include_router(messenger.router, prefix="/webhook/messenger")
-# app.include_router(whatsapp.router, prefix="/webhook/whatsapp")
+app.include_router(messenger.router)
+app.include_router(whatsapp.router)
 
 
 if __name__ == "__main__":

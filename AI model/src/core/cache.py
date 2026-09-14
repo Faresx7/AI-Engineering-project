@@ -2,7 +2,6 @@ from collections import OrderedDict
 
 
 class MessageCache:
-
     def __init__(self, max_size: int = 5000):
         '''cache consumes approximately 0.5 kilobytes for only one element'''
         self._cache = OrderedDict()
