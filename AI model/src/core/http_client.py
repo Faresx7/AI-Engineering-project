@@ -18,7 +18,10 @@ async def send_with_retry(
             try:
                 response = await http_client.post(url, headers=headers, json=json_data)
                 if response.status_code == 200:
+                    
+                    # ! userdata leakage
                     print(f"[REPLY SUCCESS] {response.json()}")
+                    
                     return response.json()
                 print(f"[REPLY ERROR] Attempt {attempt}/{retries} | {response.status_code} | {response.json()}")
             except Exception as err:
@@ -29,13 +32,13 @@ async def send_with_retry(
     return None
 
 
-async def get_message_by_mid(url: str, params: dict):
+async def get_message_by_mid(url: str, header: dict, params: dict):
     if http_client is None:
             print("[ERROR] http_client not initialized yet!")
             return None
     
     try:
-        response = await http_client.get(url, params=params)
+        response = await http_client.get(url, headers=header, params=params)
         if response.status_code == 200:
             return response.json()
 

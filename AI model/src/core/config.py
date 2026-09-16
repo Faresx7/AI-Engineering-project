@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     WHATSAPP_TOKEN: SecretStr 
     WHATSAPP_APP_SECRET: SecretStr
     PHONE_NUMBER_ID: SecretStr
-    
+
     MESSENGER_TOKEN: SecretStr
-    MESSENGER_APP_SECRET: SecretStr 
+    MESSENGER_APP_SECRET: SecretStr
+    FB_GRAPH_API_VERSION: str = "v21.0"
 
 
     model_config = SettingsConfigDict(
