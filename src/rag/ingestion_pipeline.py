@@ -1,6 +1,13 @@
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from langchain_community.document_loaders import (
     UnstructuredWordDocumentLoader,   
     PyMuPDFLoader,
@@ -14,7 +21,6 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma     # for vector DB
 
 from rank_bm25 import BM25Okapi
-from pathlib import Path
 import openpyxl
 import shutil
 import pickle
@@ -22,7 +28,7 @@ import json
 import re
 
 
-from retrieval_pipeline import Retrieval
+from src.rag.retrieval_pipeline import Retrieval
 
 
 FILE_LOADERS = {
@@ -38,9 +44,9 @@ class IngestionPipeline:
 
     def __init__(self,
                  embedding_model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-                 db_dir=Path(__file__).resolve().parent / "storage" / "db" / "chroma_db",
-                 bm25_dir = Path(__file__).resolve().parent / "storage" / "bm25_index.pkl",
-                 docs_dir=Path(__file__).resolve().parent / "docs",
+                 db_dir=Path(__file__).resolve().parents[1] / "storage" / "db" / "chroma_db",
+                 bm25_dir = Path(__file__).resolve().parents[1] / "storage" / "bm25_index.pkl",
+                 docs_dir=Path(__file__).resolve().parents[1] / "docs",
                  chunk_overlap=130,
                  chunk_size=800
                  ):

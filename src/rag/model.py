@@ -1,6 +1,6 @@
-import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 from threading import Thread
+import torch
 
 
 class AIModel:

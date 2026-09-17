@@ -7,6 +7,7 @@ from src.core.config import settings
 import src.core.http_client as hc
 import src.core.security as sec
 import src.core.cache as cache
+import src.services.rag_chain_manager as srg
 
 # ─────────────────────────────────────────────
 # Cache
@@ -28,9 +29,10 @@ async def send_auto_reply(recipient_id: str, text_message: str, retries: int = 3
     """Send automated reply via Meta Graph API with retry logic and backoff."""
     reply_url = f"https://graph.instagram.com/{settings.FB_GRAPH_API_VERSION}/me/messages"
     headers = {"Authorization": f"Bearer {settings.INSTAGRAM_TOKEN.get_secret_value()}"}
+    rag = srg.answer(text_message)
     json_data = {
         "recipient": {"id": recipient_id},
-        "message": {"text": text_message},
+        "message": {"text": rag},
     }
 
     await hc.send_with_retry(reply_url, headers, json_data, retries=retries)
@@ -38,9 +40,10 @@ async def send_auto_reply(recipient_id: str, text_message: str, retries: int = 3
 
 async def get_message_by_mid(message_id: str) -> dict | None:
     """Fetch message details using its mid via Meta Graph API."""
+    
     if hc.http_client is None:
         print("[ERROR] http_client not initialized yet!")
-        return {}
+        return None
 
     url = f"https://graph.facebook.com/{settings.FB_GRAPH_API_VERSION}/{message_id}"
     header = {"Authorization": f"Bearer {settings.INSTAGRAM_TOKEN.get_secret_value()}"}
@@ -62,16 +65,16 @@ async def _handle_single_event(event: dict):
         return
 
     mid = message_data.get("mid")
-    text = message_data.get("text")
+    text = message_data.get("text") or "[NON_TEXT_MESSAGE]"
 
     if message_data.get("is_echo"):
         if mid:
-            messages_cache.set_if_absent(mid, text or "[NON_TEXT_MESSAGE]")
+            messages_cache.set_if_absent(mid, text)
         return
 
     # ! fixed race condition
     # Duplicate delivery protection
-    if mid and not messages_cache.set_if_absent(mid, text or "[NON_TEXT_MESSAGE]"):
+    if mid and not messages_cache.set_if_absent(mid, text):
         print(f"[DUPLICATE] Skipping already-processed message {mid}")
         return
 

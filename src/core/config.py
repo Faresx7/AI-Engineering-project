@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     MESSENGER_TOKEN: SecretStr
     MESSENGER_APP_SECRET: SecretStr
-    FB_GRAPH_API_VERSION: str = "v21.0"
+    FB_GRAPH_API_VERSION: str = "v26.0"
 
 
     model_config = SettingsConfigDict(

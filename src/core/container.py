@@ -1,0 +1,1 @@
+rag_chain_instance = None

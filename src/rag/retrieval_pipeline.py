@@ -16,15 +16,18 @@ nltk.download("stopwords", quiet= True)
 
 class Retrieval:
 
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    STORAGE_DIR = PROJECT_ROOT / "storage"
+
     STOP_WORDS = set(stopwords.words("english"))
     PUNCTUATION_SET = set(string.punctuation)
     def __init__(self,
-                embedding_model_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-                persist_dir = Path(__file__).resolve().parent / "storage" / "db" /"chroma_db",
-                bm25_dir = Path(__file__).resolve().parent / "storage" / "bm25_index.pkl",
-                vector_threshold = .2,
-                k_chunks = 3
-                 ):
+                 embedding_model_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+                 persist_dir = STORAGE_DIR / "db" / "chroma_db",
+                 bm25_dir = STORAGE_DIR / "bm25_index.pkl",
+                 vector_threshold = .2,
+                 k_chunks = 3
+                  ):
         """
         Initializes the Retrieval system with embeddings, vector database, and BM25 index.
         
@@ -132,7 +135,7 @@ class Retrieval:
         
         Returns:
             list[str]: List of combined unique documents from both BM25 and vector search,
-                      limited to k_chunks*2 documents.
+                    limited to k_chunks*2 documents.
         """
 
         bm25_docs = self._bm25_index_retriever(prompt)
