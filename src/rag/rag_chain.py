@@ -12,7 +12,7 @@ class RAGChain:
 
     def answer(self, prompt: str):
         if not prompt.strip():
-            return {"answer": "Please provide a valid Question.", "context": []}
+            return "Please provide a valid Question."
 
 
         # ! retrieved content may will be in a logger for future debugging
