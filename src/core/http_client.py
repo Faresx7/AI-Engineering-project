@@ -31,10 +31,8 @@ async def send_message_with_retry(
         return None
 
     # Fix #5: Retries Logic Fix (Initial attempt + retries)
-    total_attempts = retries + 1
-
     async with send_semaphore:
-        for attempt in range(1, total_attempts + 1):
+        for attempt in range(1, retries + 1):
             try:
                 response = await http_client.post(url, headers=headers, json=json_data)
                 if response.status_code == 200:
@@ -43,14 +41,14 @@ async def send_message_with_retry(
                     return response.json()
 
                 print(
-                    f"[REPLY ERROR] Attempt {attempt}/{total_attempts} | Status: {response.status_code}"
+                    f"[REPLY ERROR] Attempt {attempt}/{retries} | Status: {response.status_code}"
                 )
             except Exception as err:
                 print(
-                    f"[REPLY FAILED] Attempt {attempt}/{total_attempts} | Error: {err}"
+                    f"[REPLY FAILED] Attempt {attempt}/{retries} | Error: {err}"
                 )
 
-            if attempt < total_attempts:
+            if attempt < retries:
                 await asyncio.sleep(1)
 
     return None
