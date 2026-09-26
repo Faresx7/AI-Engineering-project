@@ -1,33 +1,50 @@
+import re
+from deep_translator import MyMemoryTranslator
 from src.core import container
-from deep_translator import GoogleTranslator
-from langdetect import detect
 
-def generate_answer(text: str):
+
+async def generate_answer(text: str):
+    """Generate response using RAG chain for incoming user query."""
     rag_chain = container.rag_chain_instance
+
     if rag_chain is None:
         raise RuntimeError("RAG chain is not initialized")
 
-    lang = detect(text)
-    if lang is not "en":
-        
-        pass
+    if not text or not text.strip() or text == "[NON_TEXT_MESSAGE]":
+        return ""
 
-    
-    # Remove 'await' here
-    return rag_chain.answer(text)
+    english_text: str | None = None
+    if has_arabic(text):
+        english_text = translate_to_english(text)
 
-    from deep_translator import GoogleTranslator
+    prompt = f"always answer in arabic {english_text or text}"
+    response = await rag_chain.answer(prompt)
+
+    return response["answer"]
 
 
 def translate_to_english(text: str) -> str:
-    """Translates incoming user query to English for better BM25/Vector retrieval."""
+    """Translate Arabic queries to English for better retrieval accuracy."""
+    if not text or not text.strip():
+        return ""
+
     try:
-        # Automatically detects the language and converts to English
-        translated = GoogleTranslator(source="auto", target="en").translate(
+        translated = MyMemoryTranslator(source="arabic", target="en-US").translate(
             text
         )
+
+        if isinstance(translated, list):
+            translated = " ".join(str(part) for part in translated)
+
         return translated if translated else text
+
     except Exception as e:
-        # Fallback to original text if translation service fails
-        print(f"⚠️ Translation failed: {e}")
+        print(f"Translation failed: {e}")
         return text
+
+
+def has_arabic(text: str) -> bool:
+    """Check if input string contains Arabic characters."""
+    if not text:
+        return False
+    return bool(re.search(r"[\u0600-\u06FF]", text))
