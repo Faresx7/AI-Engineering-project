@@ -10,8 +10,9 @@ async def generate_answer(text: str):
     if rag_chain is None:
         raise RuntimeError("RAG chain is not initialized")
 
+    # Return None explicitly for invalid/empty inputs
     if not text or not text.strip() or text == "[NON_TEXT_MESSAGE]":
-        return ""
+        return None
 
     english_text: str | None = None
     if has_arabic(text):
@@ -44,7 +45,8 @@ def translate_to_english(text: str) -> str:
 
 
 def has_arabic(text: str) -> bool:
-    """Check if input string contains Arabic characters."""
+    """Check if input string contains Arabic characters/punctuation (excluding digits)."""
     if not text:
         return False
-    return bool(re.search(r"[\u0600-\u06FF]", text))
+    # Matches Arabic letters & punctuation (\u0600-\u065F, \u066A-\u06FF) while excluding digits (\u0660-\u0669)
+    return bool(re.search(r"[\u0600-\u065F\u066A-\u06FF]", text))
