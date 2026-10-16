@@ -3,14 +3,14 @@ from langchain_chroma import Chroma
 from pathlib import Path
 import pickle
 
-import string
 import nltk
+import string
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 
 
-nltk.download("punkt", quiet= True)
 nltk.download("stopwords", quiet= True)
+nltk.download("punkt", quiet= True)
 
 
 
@@ -21,6 +21,7 @@ class Retrieval:
 
     STOP_WORDS = set(stopwords.words("english"))
     PUNCTUATION_SET = set(string.punctuation)
+
     def __init__(self,
                  embedding_model_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
                  persist_dir = STORAGE_DIR / "db" / "chroma_db",
@@ -41,9 +42,10 @@ class Retrieval:
             Initializes instance attributes: embedding_model, db, retriever, bm25, raw_text, and k_chunks.
         """
         
-        print("🔄 Initializing RAG Service & Loading Embeddings...")
+        print("🔄[RETRIEVAL_PIPELINE] Initializing RAG Service & Loading Embeddings...")
         self.embedding_model = HuggingFaceEmbeddings(model_name=embedding_model_name)
-        self.db = Chroma(persist_directory= str(persist_dir),
+        self.db = Chroma(
+                        persist_directory= str(persist_dir),
                         embedding_function= self.embedding_model,
                         collection_metadata={"hnsw:space":"cosine"}
                         )

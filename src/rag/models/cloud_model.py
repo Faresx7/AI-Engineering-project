@@ -7,6 +7,7 @@ load_dotenv()
 
 class AIModel:
     # ! sys prompt need to handled in a better way
+    # ! need to handle separated chat history for each client
     def __init__(self, sys_prompt='''Your name is Mr.Roberto.
                                     You are a sharp, smart, and friendly human.
                                     You pay close attention to details, stay calm,
