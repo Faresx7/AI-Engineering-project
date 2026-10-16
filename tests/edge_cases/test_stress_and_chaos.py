@@ -359,7 +359,7 @@ class TestRAGChainEdgeInputs:
         """
         from src.rag.rag_chain import RAGChain
         import src.rag.retrieval_pipeline as retriever_mod
-        import src.rag.cloud_model as model_mod
+        import src.rag.models.cloud_model as model_mod
 
         with (
             patch.object(retriever_mod, "Retrieval"),
@@ -378,7 +378,7 @@ class TestRAGChainEdgeInputs:
         """BOUNDARY: Empty string → immediate validation response."""
         from src.rag.rag_chain import RAGChain
         import src.rag.retrieval_pipeline as retriever_mod
-        import src.rag.cloud_model as model_mod
+        import src.rag.models.cloud_model as model_mod
 
         with (
             patch.object(retriever_mod, "Retrieval"),
