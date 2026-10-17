@@ -194,9 +194,9 @@ class TestIngestionPipeline:
         chunks = list(pipeline._stream_chunks(iter([doc])))
         assert len(chunks) > 1
 
-    @patch("src.rag.pipeline._get_qdrant")
-    @patch("src.rag.pipeline._get_sparse_model")
-    @patch("src.rag.pipeline._embed_dense_batch")
+    @patch("src.rag.ingestion.ingestion_pipeline._get_qdrant")
+    @patch("src.rag.ingestion.ingestion_pipeline._get_sparse_model")
+    @patch("src.rag.ingestion.ingestion_pipeline._embed_dense_batch")
     def test_ingest_file_happy_path(
         self, mock_embed_dense, mock_get_sparse, mock_get_qdrant, tmp_path
     ):
@@ -231,10 +231,10 @@ class TestIngestionPipeline:
         assert mock_client.upsert.called
         assert mock_client.delete.called
 
-    @patch("src.rag.pipeline._BATCH_SIZE", 2)
-    @patch("src.rag.pipeline._get_qdrant")
-    @patch("src.rag.pipeline._get_sparse_model")
-    @patch("src.rag.pipeline._embed_dense_batch")
+    @patch("src.rag.ingestion.ingestion_pipeline._BATCH_SIZE", 2)
+    @patch("src.rag.ingestion.ingestion_pipeline._get_qdrant")
+    @patch("src.rag.ingestion.ingestion_pipeline._get_sparse_model")
+    @patch("src.rag.ingestion.ingestion_pipeline._embed_dense_batch")
     def test_ingest_file_rollback_on_error(
         self, mock_embed_dense, mock_get_sparse, mock_get_qdrant, tmp_path
     ):
@@ -271,7 +271,7 @@ class TestIngestionPipeline:
 class TestPurgeOrphanedGenerations:
     """Tests for purge_orphaned_generations maintenance sweep."""
 
-    @patch("src.rag.pipeline._get_qdrant")
+    @patch("src.rag.ingestion.ingestion_pipeline._get_qdrant")
     def test_purge_orphaned_generations(self, mock_get_qdrant):
         mock_client = MagicMock()
         mock_get_qdrant.return_value = mock_client

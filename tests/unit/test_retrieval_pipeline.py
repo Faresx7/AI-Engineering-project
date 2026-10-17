@@ -32,7 +32,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 from langchain_core.documents import Document
 
-from src.rag.retrieval_pipeline import Retrieval
+from src.rag.retrieval.retrieval_pipeline import Retrieval
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -53,8 +53,8 @@ def _make_retrieval(
      - BM25 data injected directly (no pickle file needed)
     """
     with (
-        patch("src.rag.retrieval_pipeline.HuggingFaceEmbeddings"),
-        patch("src.rag.retrieval_pipeline.Chroma") as MockChroma,
+        patch("src.rag.retrieval.retrieval_pipeline.HuggingFaceEmbeddings"),
+        patch("src.rag.retrieval.retrieval_pipeline.Chroma") as MockChroma,
     ):
         # Configure the mock retriever
         mock_retriever = MagicMock()

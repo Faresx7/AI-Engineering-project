@@ -205,10 +205,10 @@ def mock_rag_chain():
             "final_prompt": "mocked prompt",
         }
     )
-    original = container_module.rag_chain_instance
-    container_module.rag_chain_instance = mock_chain
+    original = container_module.container.rag_chain_instance
+    container_module.container.rag_chain_instance = mock_chain
     yield mock_chain
-    container_module.rag_chain_instance = original
+    container_module.container.rag_chain_instance = original
 
 
 @pytest.fixture()

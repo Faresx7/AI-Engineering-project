@@ -226,13 +226,13 @@ class TestGenerateAnswer:
         The function must raise RuntimeError to signal to the caller that
         the system isn't ready.
         """
-        original = container_module.rag_chain_instance
-        container_module.rag_chain_instance = None
+        original = container_module.container.rag_chain_instance
+        container_module.container.rag_chain_instance = None
         try:
             with pytest.raises(RuntimeError, match="not initialized"):
                 await generate_answer("What is the price?")
         finally:
-            container_module.rag_chain_instance = original
+            container_module.container.rag_chain_instance = original
 
     @pytest.mark.asyncio
     async def test_answer_contains_arabic_instruction(self, mock_rag_chain):

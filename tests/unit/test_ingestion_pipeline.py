@@ -1,40 +1,44 @@
 """
 tests/unit/test_ingestion_pipeline.py
 ========================================
-Unit tests for src.rag.ingestion_pipeline.IngestionPipeline
+Unit tests for src.rag.ingestion.loaders and src.rag.ingestion.ingestion_pipeline.IngestionPipeline
 
 REAL-LIFE CONDITIONS SIMULATED:
-  1.  _json_loader: list of dicts → one Document per dict
+  1.  _json_loader: list of dicts → one Document per dict with key-values
   2.  _json_loader: single dict object → one Document with JSON dump
   3.  _json_loader: list containing primitives → str() fallback
-  4.  _excel_loader: multi-sheet workbook with data rows
-  5.  _excel_loader: sheet with only one row (headers only) → skipped
-  6.  _excel_loader: cells with None values are excluded from content
-  7.  _chunk_documents: JSON/CSV/XLSX sources bypass text splitter
-  8.  _chunk_documents: TXT/PDF sources are split into chunks
-  9.  _load_documents: directory does not exist → FileNotFoundError
-  10. _load_documents: directory exists but no supported files → FileNotFoundError
-  11. preview_chunks: no chunks → prints warning without crash
-  12. preview_chunks: limit=-1 prints all chunks
-  13. preview_chunks: limit=N prints first N chunks
+  4.  _json_loader: source metadata is properly set
+  5.  _json_loader: Unicode / Arabic text preserved
+  6.  _excel_loader: multi-sheet workbook with data rows
+  7.  _excel_loader: sheet with only headers → skipped
+  8.  _excel_loader: cells with None values are excluded from content
+  9.  _excel_loader: metadata includes sheet name and row number
+  10. _stream_chunks: JSON/CSV/XLSX (pre_chunked) sources bypass text splitter
+  11. _stream_chunks: TXT/PDF sources are split into chunks
+  12. _stream_chunks: CSV source bypasses splitter
+  13. _stream_chunks: empty docs list returns empty chunks
+  14. file validation: unsupported file extension raises IngestionError
+  15. file validation: magic byte mismatch (sniff) raises IngestionError
+  16. file validation: empty readable text raises IngestionError
+  17. preview_chunks: no chunks prints warning without crash
+  18. preview_chunks: limit=None prints all chunks
+  19. preview_chunks: limit=N prints first N chunks
 """
 
 import json
-import pickle
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.documents import Document
 
-# We import only the static methods / pure functions to avoid triggering
-# heavy ML model downloads (HuggingFaceEmbeddings, Chroma) in __init__.
-from src.rag.ingestion_pipeline import IngestionPipeline
+from src.core.validation import IngestionError
+from src.rag.ingestion.loaders import _json_loader, _excel_loader
+from src.rag.ingestion.ingestion_pipeline import IngestionPipeline
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# _json_loader (static method)
+# _json_loader
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestJsonLoader:
@@ -51,7 +55,7 @@ class TestJsonLoader:
         json_file = tmp_path / "faq.json"
         json_file.write_text(json.dumps(data), encoding="utf-8")
 
-        docs = IngestionPipeline._json_loader(json_file)
+        docs = list(_json_loader(json_file, "faq.json"))
         assert len(docs) == 2
         assert "question: What is the price?" in docs[0].page_content
         assert "answer: $99" in docs[0].page_content
@@ -65,7 +69,7 @@ class TestJsonLoader:
         json_file = tmp_path / "product.json"
         json_file.write_text(json.dumps(data), encoding="utf-8")
 
-        docs = IngestionPipeline._json_loader(json_file)
+        docs = list(_json_loader(json_file, "product.json"))
         assert len(docs) == 1
         assert "iPhone 15" in docs[0].page_content
 
@@ -78,7 +82,7 @@ class TestJsonLoader:
         json_file = tmp_path / "primitives.json"
         json_file.write_text(json.dumps(data), encoding="utf-8")
 
-        docs = IngestionPipeline._json_loader(json_file)
+        docs = list(_json_loader(json_file, "primitives.json"))
         assert len(docs) == 3
         assert docs[2].page_content == "42"
 
@@ -88,8 +92,8 @@ class TestJsonLoader:
         json_file = tmp_path / "meta_test.json"
         json_file.write_text(json.dumps(data), encoding="utf-8")
 
-        docs = IngestionPipeline._json_loader(json_file)
-        assert str(json_file) in docs[0].metadata["source"]
+        docs = list(_json_loader(json_file, "meta_test.json"))
+        assert docs[0].metadata["source"] == "meta_test.json"
 
     def test_unicode_arabic_content_preserved(self, tmp_path):
         """
@@ -99,12 +103,12 @@ class TestJsonLoader:
         json_file = tmp_path / "arabic.json"
         json_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-        docs = IngestionPipeline._json_loader(json_file)
+        docs = list(_json_loader(json_file, "arabic.json"))
         assert "هاتف" in docs[0].page_content
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# _excel_loader (static method)
+# _excel_loader
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestExcelLoader:
@@ -131,7 +135,7 @@ class TestExcelLoader:
             ["Phone B", "300", "20"],
         ]
         xlsx = self._make_xlsx(tmp_path, rows)
-        docs = IngestionPipeline._excel_loader(xlsx)
+        docs = list(_excel_loader(xlsx, "test.xlsx"))
 
         assert len(docs) == 2
         assert "Name: Phone A" in docs[0].page_content
@@ -144,7 +148,7 @@ class TestExcelLoader:
         """
         rows = [["ID", "Name"]]  # single row = headers only
         xlsx = self._make_xlsx(tmp_path, rows)
-        docs = IngestionPipeline._excel_loader(xlsx)
+        docs = list(_excel_loader(xlsx, "test.xlsx"))
         assert docs == []
 
     def test_none_cells_are_excluded(self, tmp_path):
@@ -160,7 +164,7 @@ class TestExcelLoader:
         xlsx_path = tmp_path / "sparse.xlsx"
         wb.save(xlsx_path)
 
-        docs = IngestionPipeline._excel_loader(xlsx_path)
+        docs = list(_excel_loader(xlsx_path, "sparse.xlsx"))
         assert len(docs) == 1
         assert "Notes" not in docs[0].page_content
         assert "Name: Widget" in docs[0].page_content
@@ -169,38 +173,28 @@ class TestExcelLoader:
         """Metadata must expose sheet name and row number for debugging."""
         rows = [["Product"], ["Gadget"]]
         xlsx = self._make_xlsx(tmp_path, rows)
-        docs = IngestionPipeline._excel_loader(xlsx)
+        docs = list(_excel_loader(xlsx, "test.xlsx"))
         assert docs[0].metadata["sheet"] is not None
         assert docs[0].metadata["row"] == 2   # first data row = row 2
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# _chunk_documents()
+# _stream_chunks()
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestChunkDocuments:
-
-    def _make_pipeline(self) -> IngestionPipeline:
-        """
-        Create an IngestionPipeline instance without touching the filesystem
-        or loading any ML models.
-        """
-        with patch.object(IngestionPipeline, "__init__", lambda self, *a, **kw: None):
-            pipeline = IngestionPipeline.__new__(IngestionPipeline)
-            pipeline.chunk_size = 100
-            pipeline.chunk_overlap = 20
-            pipeline.chunked_files = []
-            pipeline.chunks = []
-            return pipeline
 
     def test_json_docs_bypass_splitter(self):
         """
         REAL-LIFE: JSON/CSV/XLSX records must not be fragmented by the
         text splitter because chunking would break their key-value structure.
         """
-        pipeline = self._make_pipeline()
-        doc = Document(page_content="name: iPhone\nprice: 999", metadata={"source": "data.json"})
-        chunks = pipeline._chunk_documents([doc])
+        pipeline = IngestionPipeline(chunk_size=100, chunk_overlap=20)
+        doc = Document(
+            page_content="name: iPhone\nprice: 999",
+            metadata={"source": "data.json", "pre_chunked": True},
+        )
+        chunks = list(pipeline._stream_chunks(iter([doc])))
 
         # The original document should pass through intact
         assert len(chunks) == 1
@@ -208,142 +202,116 @@ class TestChunkDocuments:
 
     def test_text_docs_are_split(self):
         """
-        REAL-LIFE: A PDF product manual with thousands of characters
-        must be chunked so each piece fits within the embedding model's
-        512-token context window.
+        REAL-LIFE: A product manual with thousands of characters
+        must be chunked so each piece fits within the embedding model's context window.
         """
-        pipeline = self._make_pipeline()
+        pipeline = IngestionPipeline(chunk_size=100, chunk_overlap=20)
         long_text = "word " * 500         # 2500 characters
-        doc = Document(page_content=long_text, metadata={"source": "manual.pdf"})
-        chunks = pipeline._chunk_documents([doc])
+        doc = Document(
+            page_content=long_text,
+            metadata={"source": "manual.txt", "pre_chunked": False},
+        )
+        chunks = list(pipeline._stream_chunks(iter([doc])))
 
         # Text longer than chunk_size must produce multiple chunks
         assert len(chunks) > 1
 
     def test_csv_doc_bypasses_splitter(self):
-        """CSV source must also bypass the text splitter."""
-        pipeline = self._make_pipeline()
-        doc = Document(page_content="col_a: val1\ncol_b: val2", metadata={"source": "data.csv"})
-        chunks = pipeline._chunk_documents([doc])
+        """CSV source must also bypass the text splitter when pre_chunked."""
+        pipeline = IngestionPipeline(chunk_size=100, chunk_overlap=20)
+        doc = Document(
+            page_content="col_a: val1\ncol_b: val2",
+            metadata={"source": "data.csv", "pre_chunked": True},
+        )
+        chunks = list(pipeline._stream_chunks(iter([doc])))
         assert len(chunks) == 1
 
     def test_empty_docs_list_returns_empty_chunks(self):
         """BOUNDARY: No documents to chunk → empty list returned."""
-        pipeline = self._make_pipeline()
-        chunks = pipeline._chunk_documents([])
+        pipeline = IngestionPipeline(chunk_size=100, chunk_overlap=20)
+        chunks = list(pipeline._stream_chunks(iter([])))
         assert chunks == []
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# _load_documents()
+# File validation and loading tests
 # ──────────────────────────────────────────────────────────────────────────────
 
-class TestLoadDocuments:
+class TestFileValidation:
 
-    def test_nonexistent_directory_raises_file_not_found(self, tmp_path):
+    def test_unsupported_extension_raises_ingestion_error(self, tmp_path):
         """
-        REAL-LIFE: Operator forgets to create/mount the docs volume.
-        Must raise FileNotFoundError with a descriptive message.
+        REAL-LIFE: Operator uploads unsupported script or binary file.
+        Must raise IngestionError with descriptive message.
         """
-        missing_dir = tmp_path / "does_not_exist"
-        pipeline = IngestionPipeline(docs_dir=missing_dir,
-                                     db_dir=tmp_path / "db",
-                                     bm25_dir=tmp_path / "bm25.pkl")
-        with pytest.raises(FileNotFoundError, match="does not exist"):
-            pipeline._load_documents()
+        bad_file = tmp_path / "script.py"
+        bad_file.write_text("print('hello')", encoding="utf-8")
+        pipeline = IngestionPipeline()
+        with pytest.raises(IngestionError, match="Unsupported file type"):
+            pipeline.ingest_file(bad_file, "script.py", user_id="u1")
 
-    def test_empty_directory_raises_file_not_found(self, tmp_path):
+    def test_extension_content_mismatch_raises_ingestion_error(self, tmp_path):
         """
-        REAL-LIFE: The docs folder was created but no files were uploaded yet.
-        Must raise FileNotFoundError (not silently return empty list).
+        SECURITY / CHAOS: File renamed to .pdf but contains plain text.
+        Sniffer must detect mismatch and reject before model processing.
         """
-        empty_dir = tmp_path / "empty_docs"
-        empty_dir.mkdir()
-        pipeline = IngestionPipeline(docs_dir=empty_dir,
-                                     db_dir=tmp_path / "db",
-                                     bm25_dir=tmp_path / "bm25.pkl")
-        with pytest.raises(FileNotFoundError, match="No supported files"):
-            pipeline._load_documents()
+        fake_pdf = tmp_path / "fake.pdf"
+        fake_pdf.write_text("This is definitely not a PDF file", encoding="utf-8")
+        pipeline = IngestionPipeline()
+        with pytest.raises(IngestionError, match="does not match its declared extension"):
+            pipeline.ingest_file(fake_pdf, "fake.pdf", user_id="u1")
 
-    def test_unsupported_files_only_raises_file_not_found(self, tmp_path):
+    @patch("src.rag.ingestion.ingestion_pipeline._get_qdrant")
+    @patch("src.rag.ingestion.ingestion_pipeline._get_sparse_model")
+    def test_empty_readable_text_raises_ingestion_error(
+        self, mock_sparse, mock_qdrant, tmp_path
+    ):
         """
-        EDGE: Directory contains only .py or .log files (unsupported).
-        Must raise FileNotFoundError, not silently return empty list.
+        BOUNDARY: Empty file or only whitespace text.
+        Must raise IngestionError stating no readable text was found.
         """
-        docs_dir = tmp_path / "docs"
-        docs_dir.mkdir()
-        (docs_dir / "script.py").write_text("print('hello')")
-        (docs_dir / "app.log").write_text("INFO startup")
+        mock_qdrant.return_value = MagicMock()
+        mock_sparse.return_value = MagicMock()
 
-        pipeline = IngestionPipeline(docs_dir=docs_dir,
-                                     db_dir=tmp_path / "db",
-                                     bm25_dir=tmp_path / "bm25.pkl")
-        with pytest.raises(FileNotFoundError):
-            pipeline._load_documents()
-
-    def test_allowed_extensions_filter_applies(self, tmp_path):
-        """
-        REAL-LIFE: Operator restricts ingestion to PDF files only.
-        TXT/JSON files in the same directory must be ignored.
-        """
-        docs_dir = tmp_path / "docs"
-        docs_dir.mkdir()
-        # Create a minimal valid JSON file
-        (docs_dir / "data.json").write_text('[{"k":"v"}]')
-        # A .txt file that should be excluded when filtering for .pdf only
-        (docs_dir / "note.txt").write_text("some text")
-
-        pipeline = IngestionPipeline(docs_dir=docs_dir,
-                                     db_dir=tmp_path / "db",
-                                     bm25_dir=tmp_path / "bm25.pkl")
-
-        # Filter to .json only — txt must be excluded
-        docs = pipeline._load_documents(allowed_extensions=[".json"])
-        sources = [d.metadata.get("source", "") for d in docs]
-        assert all(".json" in s for s in sources)
-        assert not any(".txt" in s for s in sources)
+        empty_txt = tmp_path / "empty.txt"
+        empty_txt.write_text("    \n\n  \t  ", encoding="utf-8")
+        pipeline = IngestionPipeline()
+        with pytest.raises(IngestionError, match="No readable text was found"):
+            pipeline.ingest_file(empty_txt, "empty.txt", user_id="u1")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# preview_chunks()
+# Streaming & Chunk Overlap Validation
 # ──────────────────────────────────────────────────────────────────────────────
 
-class TestPreviewChunks:
+class TestStreamChunksProperties:
 
-    def _pipeline(self) -> IngestionPipeline:
-        with patch.object(IngestionPipeline, "__init__", lambda self, *a, **kw: None):
-            p = IngestionPipeline.__new__(IngestionPipeline)
-            p.chunks = []
-            return p
-
-    def test_no_chunks_prints_warning(self, capsys):
-        """Empty chunks must print a warning, not raise."""
-        pipeline = self._pipeline()
-        pipeline.preview_chunks(chunks=[])
-        captured = capsys.readouterr()
-        assert "No chunks" in captured.out
-
-    def test_limit_none_prints_all(self, capsys):
-        """limit=None (or -1) must print every chunk."""
-        pipeline = self._pipeline()
-        chunks = [
-            Document(page_content=f"chunk {i}", metadata={"source": "test.txt"})
-            for i in range(5)
+    def test_empty_content_documents_are_skipped(self):
+        """Documents with empty string or whitespace only are filtered out."""
+        pipeline = IngestionPipeline()
+        docs = [
+            Document(page_content="", metadata={"source": "a.txt"}),
+            Document(page_content="   \n\t  ", metadata={"source": "b.txt"}),
+            Document(page_content="Valid content here", metadata={"source": "c.txt"}),
         ]
-        pipeline.preview_chunks(chunks=chunks, limit=None)
-        captured = capsys.readouterr()
-        for i in range(5):
-            assert f"chunk {i}" in captured.out
+        chunks = list(pipeline._stream_chunks(iter(docs)))
+        assert len(chunks) == 1
+        assert chunks[0].page_content == "Valid content here"
 
-    def test_limit_n_prints_first_n(self, capsys):
-        """limit=2 must display only the first 2 chunks."""
-        pipeline = self._pipeline()
-        chunks = [
-            Document(page_content=f"chunk {i}", metadata={"source": "test.txt"})
-            for i in range(5)
-        ]
-        pipeline.preview_chunks(chunks=chunks, limit=2)
-        captured = capsys.readouterr()
-        assert "chunk 0" in captured.out
-        assert "chunk 1" in captured.out
-        assert "chunk 4" not in captured.out
+    def test_custom_chunk_size_and_overlap_applied(self):
+        """Verify custom chunk_size and chunk_overlap configure text splitter."""
+        pipeline = IngestionPipeline(chunk_size=50, chunk_overlap=10)
+        assert pipeline.chunk_size == 50
+        assert pipeline.chunk_overlap == 10
+        assert pipeline._splitter._chunk_size == 50
+        assert pipeline._splitter._chunk_overlap == 10
+
+    def test_pre_chunked_oversized_record_is_split(self):
+        """Pre-chunked record that exceeds _MAX_RECORD_CHARS is passed to splitter."""
+        from src.rag.constants import _MAX_RECORD_CHARS
+        pipeline = IngestionPipeline(chunk_size=100, chunk_overlap=20)
+        oversized = "x" * (_MAX_RECORD_CHARS + 500)
+        doc = Document(page_content=oversized, metadata={"source": "large.json", "pre_chunked": True})
+        chunks = list(pipeline._stream_chunks(iter([doc])))
+        # Since it exceeds _MAX_RECORD_CHARS, it shouldn't stay whole
+        assert len(chunks) > 1

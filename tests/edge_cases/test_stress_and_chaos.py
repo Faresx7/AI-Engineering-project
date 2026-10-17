@@ -357,8 +357,8 @@ class TestRAGChainEdgeInputs:
         REAL-LIFE: User accidentally sends a blank message.
         RAGChain.answer() must not be called with empty/whitespace prompt.
         """
-        from src.rag.rag_chain import RAGChain
-        import src.rag.retrieval_pipeline as retriever_mod
+        from src.rag.retrieval.rag_chain import RAGChain
+        import src.rag.retrieval.retrieval_pipeline as retriever_mod
         import src.rag.models.cloud_model as model_mod
 
         with (
@@ -376,8 +376,8 @@ class TestRAGChainEdgeInputs:
     @pytest.mark.asyncio
     async def test_empty_string_returns_validation_message(self, mock_rag_chain):
         """BOUNDARY: Empty string → immediate validation response."""
-        from src.rag.rag_chain import RAGChain
-        import src.rag.retrieval_pipeline as retriever_mod
+        from src.rag.retrieval.rag_chain import RAGChain
+        import src.rag.retrieval.retrieval_pipeline as retriever_mod
         import src.rag.models.cloud_model as model_mod
 
         with (
@@ -398,7 +398,7 @@ class TestRAGChainEdgeInputs:
         are stopwords. BM25 must return [] gracefully (no ZeroDivisionError).
         """
         from rank_bm25 import BM25Okapi
-        from src.rag.retrieval_pipeline import Retrieval
+        from src.rag.retrieval.retrieval_pipeline import Retrieval
 
         corpus = ["iPhone 15 price", "Samsung warranty"]
         tokenized = [Retrieval.tokenize_and_remove_stopwords(doc) for doc in corpus]
@@ -406,8 +406,8 @@ class TestRAGChainEdgeInputs:
 
         # Manually construct a minimal Retrieval with mocked dependencies
         with (
-            patch("src.rag.retrieval_pipeline.HuggingFaceEmbeddings"),
-            patch("src.rag.retrieval_pipeline.Chroma"),
+            patch("src.rag.retrieval.retrieval_pipeline.HuggingFaceEmbeddings"),
+            patch("src.rag.retrieval.retrieval_pipeline.Chroma"),
         ):
             retrieval = Retrieval.__new__(Retrieval)
             retrieval.bm25 = bm25
