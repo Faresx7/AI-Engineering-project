@@ -6,24 +6,31 @@ Implements Fail-Fast principles, Clean Code, and a two-layer resource cleanup gu
 
 from __future__ import annotations
 
+from typing import Generator, Optional, Any
+from contextlib import contextmanager
+import stat as stat_module
+from pathlib import Path
 import logging
 import time
 import os
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Generator, Optional, Any
+
 
 from celery.exceptions import SoftTimeLimitExceeded
 
+from src.rag.ingestion.ingestion_pipeline import IngestionPipeline
+from src.core.validation import STORED_NAME_RE, IngestionError
 from src.core.celery_app import celery_app
 from src.core.config import settings
-from src.core.validation import STORED_NAME_RE, IngestionError
-from src.rag.ingestion.ingestion_pipeline import IngestionPipeline
+
 
 logger = logging.getLogger(__name__)
 
 # Lazy initialization of the heavy ML pipeline
 _pipeline = IngestionPipeline()
+
+_UPLOAD_DIR_RESOLVED = settings.UPLOAD_DIR.resolve(strict=True)
+_MAX_UPLOAD_FILE_BYTES = settings.MAX_UPLOAD_MB
+
 
 
 class ProgressThrottler:
@@ -47,45 +54,78 @@ class ProgressThrottler:
 
 
 def validate_file_reference(stored_name: str) -> Path:
+    """Fail-fast validation of an uploaded file reference.
+ 
+    SECURITY NOTE — accepted, deliberate TOCTOU window:
+    This function returns a Path, not an open handle. Everything it checks
+    (type, size, readability) is re-checked by the OS the moment a loader
+    later does `open(path)` / `fitz.open(str(path))` / etc. — so nothing
+    checked here is a binding guarantee by the time the file is actually
+    read; a sufficiently capable attacker with write access to UPLOAD_DIR
+    could swap the target between this call returning and the loader
+    opening it. This is accepted for now because closing the gap requires
+    every loader to read from a pinned file descriptor instead of a path
+    (see validate_file_reference's previous fd-based revision), which is
+    out of scope until the loaders are updated. Re-evaluate before treating
+    UPLOAD_DIR as writable by anything less trusted than this service.
     """
-    Fail-Fast: Validates the file securely against Symlinks, zero-byte uploads,
-    and access permissions without race conditions.
-    """
-    # ! [update] need to avoid TOCTOU attacks
-    # check file name
+    
     if not STORED_NAME_RE.fullmatch(stored_name):
-        raise IngestionError("Invalid upload reference format. Potential security risk.")
-
+        logger.warning("Rejected upload reference with invalid format: %r", stored_name)
+        raise IngestionError("Invalid upload reference format.")
+ 
     raw_path = settings.UPLOAD_DIR / stored_name
-
-    # avoid Symlinks attacks
+ 
+    # resolve(strict=True) follows symlinks, so a symlinked stored_name
+    # still gets caught by the relative_to() check below rather than
+    # silently being read from outside UPLOAD_DIR.
     try:
         file_path = raw_path.resolve(strict=True)
-        
+    
+    except FileNotFoundError as exc:
+        raise IngestionError("The referenced upload no longer exists.") from exc
+    
     except (PermissionError, OSError) as exc:
-        raise IngestionError(f"Cannot resolve file path due to OS error: {exc}") from exc
+        logger.error("OS error resolving upload reference %r: %s", stored_name, exc)
+        raise IngestionError("Cannot access the uploaded file.") from exc
     
-    except RuntimeError:
-        raise IngestionError("Infinite loop detected in file path resolution.")
-
-    # Defense in Depth
-    upload_dir_resolved = settings.UPLOAD_DIR.resolve()
-    
+    except RuntimeError as exc:
+        logger.error("Symlink loop detected resolving %r: %s", stored_name, exc)
+        raise IngestionError("Invalid upload reference (symlink loop).") from exc
+ 
     try:
-        file_path.relative_to(upload_dir_resolved)
-    except ValueError:
-        raise IngestionError("Security Error: Path traversal or Symlink attack detected.")
-
-    if not file_path.is_file():
-        raise IngestionError("The provided reference is a directory or invalid file type.")
-
-    if file_path.stat().st_size == 0:
-        file_path.unlink(missing_ok=True)
-        raise IngestionError("The uploaded file is empty (0 bytes).")
+        file_path.relative_to(_UPLOAD_DIR_RESOLVED)
     
+    except ValueError:
+        logger.critical(
+                        "SECURITY: path traversal / symlink escape attempt. "
+                        "stored_name=%r resolved=%s",
+                        stored_name, file_path,
+                        )
+        raise IngestionError("Invalid upload reference.")
+ 
+    try:
+        st = file_path.stat()
+    
+    except OSError as exc:
+        logger.error("Cannot stat upload %r: %s", stored_name, exc)
+        raise IngestionError("Cannot access the uploaded file.") from exc
+ 
+    if not stat_module.S_ISREG(st.st_mode):
+        raise IngestionError("The provided reference is not a regular file.")
+ 
+    if st.st_size == 0:
+        raise IngestionError("The uploaded file is empty (0 bytes).")
+ 
+    if st.st_size > _MAX_UPLOAD_FILE_BYTES:
+        raise IngestionError(
+            f"Uploaded file exceeds the maximum allowed size of "
+            f"{_MAX_UPLOAD_FILE_BYTES // (1024 * 1024)} MB."
+        )
+ 
     if not os.access(file_path, os.R_OK):
-        raise IngestionError("Worker process lacks read permission for this file.")
-
+        raise IngestionError("Cannot read the uploaded file (permission denied).")
+ 
     return file_path
 
 
