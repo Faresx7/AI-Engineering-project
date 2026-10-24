@@ -61,16 +61,19 @@ def validate_file_reference(stored_name: str) -> Path:
     # avoid Symlinks attacks
     try:
         file_path = raw_path.resolve(strict=True)
-    
-    except FileNotFoundError:
-        raise IngestionError("The uploaded file was not found. It may have expired or been deleted.")
+        
+    except (PermissionError, OSError) as exc:
+        raise IngestionError(f"Cannot resolve file path due to OS error: {exc}") from exc
     
     except RuntimeError:
         raise IngestionError("Infinite loop detected in file path resolution.")
 
     # Defense in Depth
     upload_dir_resolved = settings.UPLOAD_DIR.resolve()
-    if not str(file_path).startswith(str(upload_dir_resolved)):
+    
+    try:
+        file_path.relative_to(upload_dir_resolved)
+    except ValueError:
         raise IngestionError("Security Error: Path traversal or Symlink attack detected.")
 
     if not file_path.is_file():
