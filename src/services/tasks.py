@@ -129,25 +129,47 @@ def validate_file_reference(stored_name: str) -> Path:
     return file_path
 
 
-@contextmanager
-def guaranteed_file_cleanup(file_path: Path) -> Generator[Path, None, None]:
+def _remove_file(verified_path: Path) -> None:
     """
-    Context manager to guarantee local file cleanup.
-    The 'finally' block ensures execution even during Hard Timeouts or severe exceptions.
+    Safely remove a validated uploaded file from the configured upload directory.
+
+    This helper enforces that the target path remains within the application upload
+    root before attempting deletion, preventing path traversal attacks and accidental
+    deletion outside the intended storage area. It also tolerates transient filesystem
+    races by using missing_ok=True and logs permission or lock-related failures without
+    raising exceptions, allowing deferred cleanup by a background purge mechanism.
+
+    Args:
+        verified_path (Path): The validated upload path to remove. It must point
+            inside the configured upload directory; otherwise the deletion is
+            rejected as a security measure.
+
+    Returns:
+        None: This function does not return a value. It performs cleanup and logs
+        any permission, lock, or filesystem issues without raising them.
     """
     try:
-        yield file_path
-    finally:
-        if file_path.exists():
-            try:
-                file_path.unlink()
-                logger.info("Successfully cleaned up file: %s", file_path.name)
-            except OSError as cleanup_err:
-                logger.critical(
-                    "CRITICAL: OS prevented deletion of file %s: %s", 
-                    file_path.name, 
-                    cleanup_err
-                )
+        try:
+            verified_path.relative_to(_UPLOAD_DIR_RESOLVED)
+        
+        except ValueError:
+            logger.critical(
+                "SECURITY: Prevented file deletion attempt outside UPLOAD_DIR: %s",
+                verified_path,
+            )
+            return
+        
+        # [FIX] avoid race condition by using "missing_ok=True"
+        verified_path.unlink(missing_ok=True)
+        
+        logger.info("Successfully cleaned up local file: %s", verified_path.name)
+    except OSError as cleanup_err:
+        logger.warning(
+            "OS lock or permission issue prevented immediate deletion of %s: %s. "
+            "File cleanup deferred to periodic purge worker.",
+            verified_path.name,
+            cleanup_err,
+        )
 
 
 @celery_app.task(bind=True, name="ingestion.ingest_document", max_retries=3)
