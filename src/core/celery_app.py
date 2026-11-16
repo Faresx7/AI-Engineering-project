@@ -44,7 +44,7 @@ celery_app.conf.update(
     task_time_limit=720,        # Hard SIGKILL execution guard (12 mins)
     
     # [Critical Fix] Must be greater than task_time_limit to prevent duplicate execution
-    broker_transport_options={'visibility_timeout': 1000}, 
+    broker_transport_options={'visibility_timeout': 2500}, 
 
 
 

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     MESSENGER_APP_SECRET: SecretStr
     FB_GRAPH_API_VERSION: str = "v26.0"
 
-    # ingestion
+    # ingestion #########################################
     INGEST_API_KEY: SecretStr
     ID_PATTERN: ClassVar[str]= r"^[\w\-.:@]{1,128}$"
     UPLOAD_DIR: Path = PROJECT_ROOT / "storage" / "uploads"
@@ -32,11 +32,15 @@ class Settings(BaseSettings):
 
     JWT_SECRET_KEY: SecretStr
 
-    # celery & redis
+    # celery & redis #########################################
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+    INGEST_LOCK_REDIS_URL: str = "redis://localhost:6379/2"
+    
+    INGESTION_SOFT_TIME_LIMIT_SECONDS: int = 600
+    INGESTION_HARD_TIME_LIMIT_SECONDS: int = 690
 
-    # Qdrant
+    # Qdrant #########################################
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: SecretStr | None = None
 
@@ -44,14 +48,14 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # File handling configurations (Application Constants)
+    # File handling configurations (Application Constants) ########
     ALLOWED_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
         {".pdf", ".docx", ".xlsx", ".json", ".txt", ".md", ".csv"}
     )
     ZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".docx", ".xlsx"})
     TEXT_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".json", ".txt", ".md", ".csv"})
     
-    # Guard against "zip bombs": a tiny .xlsx/.docx that expands to gigabytes.
+    # Guard against "zip bombs": a tiny .xlsx/.docx that expands to gigabytes. ####
     MAX_UNCOMPRESSED_BYTES: ClassVar[int] = 200 * 1024 * 1024
 
     MAX_CONCURRENT_UPLOADS: ClassVar[int] = 20

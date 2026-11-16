@@ -38,3 +38,18 @@ _DEFAULT_PURGE_MAX_DOCS: int = 100_000
 # XML tag constants (namespace-safe; `str.endswith` on raw tags is NOT safe)
 _WD_PARA_TAG: str = qn("w:p")
 _WD_TABLE_TAG: str = qn("w:tbl")
+
+
+# ── Celery task retry & locking policy ────────────────────────────────────────
+_NON_RETRYABLE_CODE_ERRORS: tuple[type[Exception], ...] = (
+    TypeError,
+    AttributeError,
+    KeyError,
+    ValueError,
+    NotImplementedError,
+)
+
+_INGEST_SOFT_TIME_LIMIT: int = settings.INGESTION_SOFT_TIME_LIMIT_SECONDS
+_INGEST_HARD_TIME_LIMIT: int = settings.INGESTION_HARD_TIME_LIMIT_SECONDS
+
+_LOCK_TTL_SECONDS: int = _INGEST_HARD_TIME_LIMIT + 45
