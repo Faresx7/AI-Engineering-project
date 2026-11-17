@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     
     MESSENGER_TOKEN: SecretStr
     MESSENGER_APP_SECRET: SecretStr
+    
     FB_GRAPH_API_VERSION: str = "v26.0"
 
     # ingestion #########################################
@@ -39,6 +40,14 @@ class Settings(BaseSettings):
     
     INGESTION_SOFT_TIME_LIMIT_SECONDS: int = 600
     INGESTION_HARD_TIME_LIMIT_SECONDS: int = 690
+
+    PURGE_LOCK_KEY: str = "ingest:lock:purge_stale_local_uploads"
+    PURGE_SOFT_TIME_LIMIT: int = 200
+    PURGE_HARD_TIME_LIMIT: int = 250
+    MAX_PURGE_FILES_PER_RUN: int = 5000
+    STALE_UPLOAD_MAX_AGE: int = 3600 * 24
+
+
 
     # Qdrant #########################################
     QDRANT_URL: str = "http://localhost:6333"

@@ -208,7 +208,6 @@ def _remove_file(verified_path: Path) -> None:
         )
 
 
-
 ################################################################################
 # Helpers
 ################################################################################
@@ -579,30 +578,219 @@ def ingest_document(self: Any,
             )
 
 
+@celery_app.task(
+    bind=True,
+    name="ingestion.purge_stale_local_uploads",
+    soft_time_limit=settings.PURGE_SOFT_TIME_LIMIT,
+    time_limit=settings.PURGE_HARD_TIME_LIMIT,
+)
+def purge_stale_local_uploads(self: Any) -> dict[str, Any]:
+    """Sweep the local upload directory for orphaned files left by hard worker crashes.
 
-@celery_app.task(name="ingestion.purge_stale_local_uploads")
-def purge_stale_local_uploads() -> None:
-    """
-    Fallback Periodic Task (Celery Beat):
-    Sweeps the upload directory for orphaned files caused by catastrophic crashes (e.g., SIGKILL).
-    """
-    cutoff_time = time.time() - (24 * 3600)  # 24 Hours
+    This periodic Celery Beat task streams files in ``_UPLOAD_DIR_RESOLVED`` and
+    deletes regular files matching ``STORED_NAME_RE`` whose modification time exceeds
+    the safe retention window. Concurrency across workers is guarded by a Redis
+    ``NX`` lock, directory scanning is bounded by ``MAX_PURGE_FILES_PER_RUN``, and
+    symlinks are strictly ignored.
 
+    Handled Exceptions:
+        - ``Exception`` (Redis lock acquire/release): Caught and logged as a warning.
+          If lock acquisition fails, the sweep proceeds without a lock because
+          unlinking expired files is idempotent; if release fails, Redis TTL expires
+          the lock automatically.
+        - ``FileNotFoundError`` (per-entry ``is_file``/``stat``): Caught silently
+          inside the loop and counted as skipped when an active ingestion worker
+          deletes the file mid-scan (TOCTOU race).
+        - ``FileNotFoundError`` (directory ``scandir``): Caught at the outer level,
+          logged as an error, and aborts the sweep cleanly.
+        - ``OSError`` (per-entry ``stat``/``unlink``): Caught per file, logged as a
+          warning, increments ``failed``, and allows the sweep to continue.
+        - ``OSError`` (directory ``scandir``): Caught at the outer level, logged as
+          an error, and aborts the sweep cleanly.
+        - ``SoftTimeLimitExceeded``: Caught, logged as an error with partial progress
+          counters, and re-raised so Celery marks the task as timed out after
+          releasing the lock in ``finally``.
+
+    Returns:
+        dict[str, Any]: Execution summary dictionary:
+            - When skipped early: ``{"status": "skipped", "reason": str}`` where
+              ``reason`` is ``"already_running"``, ``"upload_dir_missing"``, or
+              ``"scan_error"``.
+            - When completed: ``{"status": "done", "scanned": int, "purged": int,
+              "skipped": int, "failed": int, "duration_ms": int}``.
+    """
+    started_at = time.monotonic()
+    got_lock = False
+
+    # 1. Acquire distributed lock to prevent overlapping sweeps
     try:
-        entries = list(os.scandir(settings.UPLOAD_DIR))
-    except FileNotFoundError:
-        logger.warning("Upload directory not found during purge.")
-        return
+        got_lock = bool(
+            _get_redis().set(
+                settings.PURGE_LOCK_KEY,
+                "1",
+                nx=True,
+                ex=settings.PURGE_HARD_TIME_LIMIT + 60,
+            )
+        )
+    
+    except Exception as exc:
+        # Degrade gracefully on Redis outage; deleting stale files is idempotent.
+        logger.warning(
+            "INGEST_PURGE_LOCK_UNAVAILABLE | task_id=%s err_type=%s err=%r "
+            "action=proceeding_without_lock",
+            self.request.id,
+            type(exc).__name__,
+            str(exc),
+        )
+    
+    else:
+        if not got_lock:
+            logger.info(
+                "INGEST_PURGE_ALREADY_RUNNING | task_id=%s action=skipped_duplicate_sweep",
+                self.request.id,
+            )
+            return {"status": "skipped", "reason": "already_running"}
 
-    for entry in entries:
-        if (
-            entry.is_file()
-            and STORED_NAME_RE.fullmatch(entry.name)
-            and entry.stat().st_mtime < cutoff_time
-        ):
-            target_path = Path(entry.path)
+    # 2. Enforce safe cutoff longer than any active ingestion task
+    max_age = max(settings.STALE_UPLOAD_MAX_AGE, _INGEST_HARD_TIME_LIMIT + 3600)
+    cutoff_time = time.time() - max_age
+    scanned = purged = skipped = failed = 0
+
+    # 3. Stream directory entries with bounded count & TOCTOU safety
+    try:
+        with os.scandir(_UPLOAD_DIR_RESOLVED) as entries:
+            for entry in entries:
+                # Cap work per run to prevent memory/I/O spikes on large backlogs.
+                if scanned >= settings.MAX_PURGE_FILES_PER_RUN:
+                    logger.warning(
+                        "INGEST_PURGE_LIMIT_REACHED | task_id=%s max_files=%d "
+                        "action=deferred_remaining_to_next_sweep",
+                        self.request.id,
+                        settings.MAX_PURGE_FILES_PER_RUN,
+                    )
+                    break
+
+                scanned += 1
+
+                # Ignore non-managed files (e.g., .gitkeep or hidden temp files).
+                if not STORED_NAME_RE.fullmatch(entry.name):
+                    skipped += 1
+                    continue
+
+                try:
+                    # Reject symlinks/directories and skip files still within retention window.
+                    if (
+                        not entry.is_file(follow_symlinks=False)
+                        or entry.stat(follow_symlinks=False).st_mtime >= cutoff_time
+                    ):
+                        
+                        skipped += 1
+                        continue
+                
+                except FileNotFoundError:
+                    # Active ingestion worker removed the file mid-scan; safe to ignore.
+                    skipped += 1
+                    continue
+
+                except OSError as exc:
+                    failed += 1
+                    logger.warning(
+                        "INGEST_PURGE_STAT_FAILED | task_id=%s stored_name=%r "
+                        "err_type=%s err=%r action=skipped_file",
+                        self.request.id,
+                        entry.name,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+                    
+                    continue
+
+                # Unlink confirmed stale upload using verified directory root.
+                try:
+                    (_UPLOAD_DIR_RESOLVED / entry.name).unlink(missing_ok=True)
+                    purged += 1
+
+                except OSError as exc:
+                    failed += 1
+                    logger.warning(
+                        "INGEST_PURGE_DELETE_FAILED | task_id=%s stored_name=%r "
+                        "err_type=%s err=%r action=deferred_to_next_sweep",
+                        self.request.id,
+                        entry.name,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+
+    except FileNotFoundError:
+        logger.error(
+            "INGEST_PURGE_DIR_MISSING | task_id=%s upload_dir=%r action=aborted_sweep",
+            self.request.id,
+            str(_UPLOAD_DIR_RESOLVED),
+        )
+
+        return {"status": "skipped", "reason": "upload_dir_missing"}
+
+    except OSError as exc:
+        logger.error(
+            "INGEST_PURGE_SCAN_FAILED | task_id=%s upload_dir=%r err_type=%s "
+            "err=%r action=aborted_sweep",
+            self.request.id,
+            str(_UPLOAD_DIR_RESOLVED),
+            type(exc).__name__,
+            str(exc),
+        )
+
+        return {"status": "skipped", "reason": "scan_error"}
+
+    except SoftTimeLimitExceeded:
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        logger.error(
+            "INGEST_PURGE_SOFT_TIMEOUT | task_id=%s scanned=%d purged=%d "
+            "skipped=%d failed=%d duration_ms=%d err_type=SoftTimeLimitExceeded "
+            "action=aborted_sweep",
+            self.request.id,
+            scanned,
+            purged,
+            skipped,
+            failed,
+            duration_ms,
+        )
+
+        raise
+
+    finally:
+        # Release lock only if this invocation acquired it.
+        if got_lock:
             try:
-                target_path.unlink(missing_ok=True)
-                logger.info("Purged orphaned file: %s", target_path.name)
-            except OSError as err:
-                logger.error("Failed to purge file %s: %s", target_path.name, err)
+                _get_redis().delete(settings.PURGE_LOCK_KEY)
+
+            except Exception as exc:
+                logger.warning(
+                    "INGEST_PURGE_LOCK_RELEASE_FAILED | task_id=%s ttl_seconds=%d "
+                    "err_type=%s err=%r action=deferred_to_ttl_expiry",
+                    self.request.id,
+                    settings.PURGE_HARD_TIME_LIMIT + 60,
+                    type(exc).__name__,
+                    str(exc),
+                )
+
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    logger.info(
+        "INGEST_PURGE_COMPLETED | task_id=%s scanned=%d purged=%d skipped=%d "
+        "failed=%d duration_ms=%d",
+        self.request.id,
+        scanned,
+        purged,
+        skipped,
+        failed,
+        duration_ms,
+    )
+
+    return {
+        "status": "done",
+        "scanned": scanned,
+        "purged": purged,
+        "skipped": skipped,
+        "failed": failed,
+        "duration_ms": duration_ms,
+    }
