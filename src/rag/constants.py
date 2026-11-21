@@ -53,3 +53,15 @@ _INGEST_SOFT_TIME_LIMIT: int = settings.INGESTION_SOFT_TIME_LIMIT_SECONDS
 _INGEST_HARD_TIME_LIMIT: int = settings.INGESTION_HARD_TIME_LIMIT_SECONDS
 
 _LOCK_TTL_SECONDS: int = _INGEST_HARD_TIME_LIMIT + 45
+
+
+
+# File extensions routed to the MarkItDown converter.
+_MARKITDOWN_EXTENSIONS = {
+    ".docx", ".xlsx", ".xls",
+    ".csv", ".json", ".txt", ".md",
+    ".pptx", ".html", ".htm", ".msg",
+}
+
+# Archive-based Office extensions requiring zip-bomb expansion checks.
+_ZIP_EXTENSIONS = {".docx", ".xlsx", ".pptx"}

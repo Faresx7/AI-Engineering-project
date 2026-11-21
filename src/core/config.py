@@ -57,17 +57,12 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # File handling configurations (Application Constants) ########
-    ALLOWED_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
-        {".pdf", ".docx", ".xlsx", ".json", ".txt", ".md", ".csv"}
-    )
-    ZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".docx", ".xlsx"})
-    TEXT_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".json", ".txt", ".md", ".csv"})
-    
-    # Guard against "zip bombs": a tiny .xlsx/.docx that expands to gigabytes. ####
-    MAX_UNCOMPRESSED_BYTES: ClassVar[int] = 200 * 1024 * 1024
+    # Maximum character length per yielded slice when streaming MarkItDown output.
+    # loader.py
+    _STREAM_SLICE_CHARS: int = 4_000
 
-    MAX_CONCURRENT_UPLOADS: ClassVar[int] = 20
+    # Guard against "zip bombs": a tiny .xlsx/.docx that expands to gigabytes.
+    MAX_UNCOMPRESSED_BYTES: ClassVar[int] = 200 * 1024 * 1024
 
     READ_CHUNK_BYTES: ClassVar[int]= 1024 * 1024
 
