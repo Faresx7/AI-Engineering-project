@@ -65,22 +65,21 @@ from src.rag.constants import (_DEFAULT_PURGE_MIN_AGE_SECONDS,
                                _MAX_RECORD_CHARS,
                                _BATCH_SIZE,
                               )
-from src.rag.ingestion.loaders import (_markitdown_loader,
-                                       stream_documents,
-                                       _pdf_loader,
-                                       _LOADERS,
-                                      )
-from src.rag.ingestion.budget import _batched, _retry
+
+from src.rag.ingestion.loaders import stream_documents, _LOADERS
+from src.rag.ingestion.pipeline_utils import _batched, _retry
 from src.rag.clients import (_embed_dense_batch,
-                             _get_genai_client,
                              _get_sparse_model,
                              _get_qdrant,
                             )
+
 from src.core.config import settings
+
 
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, Optional[int]], None]
+
 
 # ##############################################################################
 # Pipeline result
