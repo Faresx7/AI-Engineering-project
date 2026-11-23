@@ -13,7 +13,7 @@ import pytest
 from langchain_core.documents import Document
 
 from src.core.validation import IngestionError
-from src.rag.ingestion.budget import _RowBudget, _batched, _retry
+from src.rag.ingestion.pipeline_utils import _RowBudget, _batched, _retry
 from src.rag.constants import (
     _BATCH_SIZE,
     _MAX_CELL_CHARS,

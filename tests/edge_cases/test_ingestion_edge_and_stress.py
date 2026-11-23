@@ -37,7 +37,7 @@ from langchain_core.documents import Document
 
 from src.core.validation import IngestionError
 from src.rag.constants import _MAX_TABLE_ROWS
-from src.rag.ingestion.budget import _RowBudget
+from src.rag.ingestion.pipeline_utils import _RowBudget
 from src.rag.ingestion.loaders import (
     _docx_loader,
     _excel_loader,
