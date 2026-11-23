@@ -19,6 +19,7 @@ import os
 from celery.exceptions import SoftTimeLimitExceeded
 import redis
 
+from src.rag.ingestion.ingestion_pipeline import purge_orphaned_generations
 from src.rag.ingestion.ingestion_pipeline import IngestionPipeline
 from src.core.validation import STORED_NAME_RE, IngestionError
 from src.core.celery_app import celery_app
@@ -30,13 +31,15 @@ from src.rag.constants import (_INGEST_HARD_TIME_LIMIT,
                                 _NON_RETRYABLE_CODE_ERRORS,
                                 )
 
-
 ############################################################################
 
 logger = logging.getLogger(__name__)
 
 _pipeline = IngestionPipeline()
 
+# Ensure the upload directory exists before resolving it strictly
+
+settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 _UPLOAD_DIR_RESOLVED = settings.UPLOAD_DIR.resolve(strict=True)
 _MAX_UPLOAD_FILE_BYTES = settings.MAX_UPLOAD_MB
 
@@ -794,3 +797,47 @@ def purge_stale_local_uploads(self: Any) -> dict[str, Any]:
         "failed": failed,
         "duration_ms": duration_ms,
     }
+
+
+@celery_app.task(name="rag.purge_orphaned_generations",
+                 ignore_result=True,
+                 soft_time_limit=120,
+                 time_limit=150,
+                )
+def purge_orphaned_generations_task() -> int:
+    """Runs the scheduled Qdrant orphan-generation cleanup inside the Celery worker.
+
+    Why it matters:
+        Executes periodically via Celery Beat to remove stale or incomplete
+        document versions left behind by crashed workers without manual intervention.
+
+    Args:
+        None.
+
+    Returns:
+        int: Number of orphaned generations deleted during this sweep.
+
+    Errors:
+        Exception: Logs and re-raises unexpected worker or Qdrant connection
+            failures so Celery records the task failure properly.
+    """
+    # Log sweep start so worker logs show exact execution timestamps
+    logger.info("CELERY_PURGE_GENERATIONS_STARTED | action=sweeping")
+
+    # Run the Qdrant cleanup sweep and report total deleted generations
+    try:
+        purged = purge_orphaned_generations()
+
+    except Exception as exc:
+        logger.exception("CELERY_PURGE_GENERATIONS_FAILED | err_type=%s err=%r action=raising",
+                         type(exc).__name__,
+                         str(exc),
+                        )
+
+        raise
+
+    logger.info("CELERY_PURGE_GENERATIONS_FINISHED | purged=%d action=done",
+                purged,
+               )
+
+    return purged
