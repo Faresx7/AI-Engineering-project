@@ -1,67 +1,115 @@
-"""Constants and safety limits for the RAG ingestion pipeline."""
-from __future__ import annotations
+"""Constants, safety guardrails, and Celery policy limits for the RAG pipeline.
 
-from docx.oxml.ns import qn
+What This File Does:
+    Centralizes all model identifiers, file-parsing safety caps, retry counts,
+    Qdrant collection defaults, and Celery worker timeout/lock thresholds so
+    no magic numbers are hardcoded across pipeline modules.
+
+Sections:
+    1. Model Identifiers: Dense and sparse embedding model names and dimensions.
+    2. Parsing & Chunking Limits: Size caps for PDFs, text files, and chunks.
+    3. Retry Policy: Bounded retry attempts and backoff delays for external APIs.
+    4. Qdrant & Orphan Sweep Defaults: Collection name and memory caps.
+    5. Celery Worker & Beat Policy: Timeouts, locks, non-retryable errors, and purge timings.
+    6. File Extension Sets: Immutable extension groups for MarkItDown and zip checks.
+"""
+from __future__ import annotations
 
 from src.core.config import settings
 
-# ── Model identifiers ─────────────────────────────────────────────────────────
+
+# ##############################################################################
+# 1. Model identifiers
+# ##############################################################################
+
 _DENSE_MODEL_NAME: str = getattr(settings, "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 _DENSE_EMBEDDING_DIM: int = int(getattr(settings, "GEMINI_EMBEDDING_DIM", 768))
 _SPARSE_MODEL_NAME: str = "Qdrant/bm25"
 
-# ── Safety / performance limits ───────────────────────────────────────────────
+
+# ##############################################################################
+# 2. Parsing & chunking safety limits
+# ##############################################################################
+
 _BATCH_SIZE: int = 64
 _MAX_PDF_PAGES: int = 200
-_MAX_TABLE_ROWS: int = 50_000
 _MAX_CHUNKS_PER_DOC: int = 20_000
 _MAX_RECORD_CHARS: int = 4_000
-_MAX_CONSECUTIVE_EMPTY_ROWS: int = 50
-_MAX_CELL_CHARS: int = 1_000
-_MAX_CELLS_PER_ROW: int = 500
 _MAX_TEXT_BYTES: int = 10 * 1024 * 1024
-_MAX_LINE_CHARS: int = 50_000
 
-# ── Retry policy: bounded, fail-fast after a few attempts ────────────────────
+
+# ##############################################################################
+# 3. Retry policy (bounded, fail-fast after a few attempts)
+# ##############################################################################
+
 _EMBED_MAX_RETRIES: int = 3
 _QDRANT_MAX_RETRIES: int = 3
-_RETRY_BASE_DELAY_SECONDS: float = 1.0
+_RETRY_BASE_DELAY_SECONDS: float = 2.0
 
-# ── Orphan generation sweep defaults ──────────────────────────────────────────
-_DEFAULT_PURGE_MIN_AGE_SECONDS: float = 3600.0
+
+# ##############################################################################
+# 4. Qdrant & orphan generation sweep defaults
+# ##############################################################################
+
+_DEFAULT_COLLECTION_NAME: str = getattr(settings, "QDRANT_COLLECTION_NAME", "rag_documents")
 _DEFAULT_PURGE_SCROLL_BATCH: int = 512
-# Maximum number of distinct (user_id, doc_id) pairs to hold in memory during
-# the purge sweep. If the collection has millions of documents this prevents
-# the ``seen`` dict from growing without bound and eating all available RAM.
+
+# Cap distinct (user_id, doc_id) pairs held in RAM per sweep to prevent OOM
 _DEFAULT_PURGE_MAX_DOCS: int = 100_000
 
-# XML tag constants (namespace-safe; `str.endswith` on raw tags is NOT safe)
-_WD_PARA_TAG: str = qn("w:p")
-_WD_TABLE_TAG: str = qn("w:tbl")
 
+# ##############################################################################
+# 5. Celery worker & Beat maintenance policy
+# ##############################################################################
 
-# ── Celery task retry & locking policy ────────────────────────────────────────
-_NON_RETRYABLE_CODE_ERRORS: tuple[type[Exception], ...] = (
-    TypeError,
-    AttributeError,
-    KeyError,
-    ValueError,
-    NotImplementedError,
-)
+# Code bugs that will never succeed on retry and should fail immediately
+_NON_RETRYABLE_CODE_ERRORS: tuple[type[Exception], ...] = (NotImplementedError,
+                                                           AttributeError,
+                                                           TypeError,
+                                                           ValueError,
+                                                           KeyError,
+                                                          )
 
+# Ingestion task execution limits and Redis per-document lock TTL
 _INGEST_SOFT_TIME_LIMIT: int = settings.INGESTION_SOFT_TIME_LIMIT_SECONDS
 _INGEST_HARD_TIME_LIMIT: int = settings.INGESTION_HARD_TIME_LIMIT_SECONDS
-
 _LOCK_TTL_SECONDS: int = _INGEST_HARD_TIME_LIMIT + 45
 
+# Guarantee orphan grace period is always safely above the hard task kill limit
+_DEFAULT_PURGE_MIN_AGE_SECONDS: float = max(3600.0, float(_INGEST_HARD_TIME_LIMIT + 600))
 
 
-# File extensions routed to the MarkItDown converter.
-_MARKITDOWN_EXTENSIONS = {
-    ".docx", ".xlsx", ".xls",
-    ".csv", ".json", ".txt", ".md",
-    ".pptx", ".html", ".htm", ".msg",
-}
+_PURGE_FILE_SOFT_TIME_LIMIT: int = settings.PURGE_FILE_SOFT_TIME_LIMIT
+_PURGE_FILE_HARD_TIME_LIMIT: int = settings.PURGE_FILE_HARD_TIME_LIMIT
 
-# Archive-based Office extensions requiring zip-bomb expansion checks.
-_ZIP_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
+# Periodic orphan-generation purge timeouts and Beat schedule timings
+_PURGE_GEN_SOFT_TIME_LIMIT: int = settings.PURGE_GEN_SOFT_TIME_LIMIT
+_PURGE_GEN_HARD_TIME_LIMIT: int = settings.PURGE_GEN_HARD_TIME_LIMIT
+
+_PURGE_GEN_SCHEDULE_MINUTES: int = 30
+_PURGE_GEN_TASK_EXPIRES_SECONDS: int = max(300, (_PURGE_GEN_SCHEDULE_MINUTES * 60) - 300)
+
+
+# ##############################################################################
+# 6. Immutable file extension sets
+# ##############################################################################
+
+# Extensions routed to the MarkItDown converter
+_MARKITDOWN_EXTENSIONS: frozenset[str] = frozenset({".docx",
+                                                    ".xlsx",
+                                                    ".pptx",
+                                                    ".html",
+                                                    ".json",
+                                                    ".htm",
+                                                    ".xls",
+                                                    ".csv",
+                                                    ".txt",
+                                                    ".msg",
+                                                    ".md",
+                                                   })
+
+# Archive-based Office extensions requiring zip-bomb expansion checks
+_ZIP_EXTENSIONS: frozenset[str] = frozenset({".docx",
+                                             ".xlsx",
+                                             ".pptx",
+                                            })
