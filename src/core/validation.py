@@ -6,11 +6,13 @@ the API would slow its startup and waste RAM in a process that never uses them.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 import zipfile
 
-
 from src.core.config import settings
+
+STORED_NAME_RE = re.compile(r"^[0-9a-f]{32}\.[a-zA-Z0-9]+$")
 
 class IngestionError(ValueError):
     """The problem is the uploaded file itself (corrupt, unsupported, too big...).
