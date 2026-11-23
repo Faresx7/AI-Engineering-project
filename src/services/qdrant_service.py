@@ -1,19 +1,19 @@
-import os
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
-    VectorParams,
-    SparseVectorParams,
     Distance,
-    models,
-    PointStruct,
-    Filter,
     FieldCondition,
-    MatchValue,
-    Prefetch,
-    FusionQuery,
+    Filter,
     Fusion,
-    SparseVector
+    FusionQuery,
+    MatchValue,
+    PayloadSchemaType,
+    PointStruct,
+    Prefetch,
+    SparseVector,
+    SparseVectorParams,
+    VectorParams,
 )
 
 
@@ -24,16 +24,33 @@ class QdrantService:
         self.port = port
         self.client = AsyncQdrantClient(host=self.host, port=self.port)
 
-    async def init_collection(self,
-                              collection_name: str = "rag_documents",
-                              dense_vector_size: int = 768):
+    async def _ensure_payload_indexes(self, collection_name: str) -> None:
+        """Create payload indexes required for fast filtering, atomic swaps, and rollbacks."""
+        indexes: dict[str, PayloadSchemaType] = {
+            "user_id": PayloadSchemaType.KEYWORD,
+            "doc_id": PayloadSchemaType.KEYWORD,
+            "generation": PayloadSchemaType.KEYWORD,
+            "committed": PayloadSchemaType.BOOL,
+        }
 
-        """
-        Create collection with Named Vectors (Dense + Sparse) if it doesn't exist.
+        for field_name, field_schema in indexes.items():
+            await self.client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field_name,
+                field_schema=field_schema,
+                wait=True,
+            )
+
+    async def init_collection(
+        self,
+        collection_name: str = "rag_documents",
+        dense_vector_size: int = 768,
+    ) -> None:
+        """Create collection with Named Vectors (Dense + Sparse) and payload indexes.
+
         - Dense: Used for semantic meaning (Google Embeddings).
         - Sparse: Used for exact keyword match (BM25 / FastEmbed).
         """
-
         collections = await self.client.get_collections()
         existing_names = [col.name for col in collections.collections]
 
@@ -44,21 +61,26 @@ class QdrantService:
                     "dense": VectorParams(
                         size=dense_vector_size,
                         distance=Distance.COSINE,
-                        memory = models.Memory.COLD # this will load data first time in the disk not ram
+                        on_disk=True,
                     )
                 },
                 sparse_vectors_config={
                     "sparse": SparseVectorParams()
-                }
+                },
             )
 
-    async def upsert_points(self,
+        # Always verify payload indexes on startup (idempotent if they already exist)
+        await self._ensure_payload_indexes(collection_name)
+
+    async def upsert_points(
+        self,
         collection_name: str,
-        points: List[PointStruct]):
+        points: List[PointStruct],
+    ) -> None:
         """Upload or update document points in Qdrant asynchronously."""
         await self.client.upsert(
             collection_name=collection_name,
-            points=points
+            points=points,
         )
 
     async def hybrid_search(
@@ -67,29 +89,32 @@ class QdrantService:
         user_id: str,
         dense_vector: List[float],
         sparse_vector: Dict[str, Any],
-        limit: int = 3
+        limit: int = 3,
     ) -> List[Dict[str, Any]]:
+        """Perform Hybrid Search (Dense + Sparse) with RRF Fusion.
+
+        Strictly filtered by owner user_id and excludes uncommitted in-flight chunks.
         """
-        Perform Hybrid Search (Dense + Sparse) with RRF Fusion
-        strictly filtered by the owner's user_id.
-        """
-        # Strict tenant isolation filter
         user_filter = Filter(
             must=[
                 FieldCondition(
                     key="user_id",
-                    match=MatchValue(value=user_id)
+                    match=MatchValue(value=user_id),
                 )
-            ]
+            ],
+            must_not=[
+                FieldCondition(
+                    key="committed",
+                    match=MatchValue(value=False),
+                )
+            ],
         )
 
-        # Convert dictionary input to Qdrant SparseVector model
         formatted_sparse = SparseVector(
             indices=sparse_vector["indices"],
-            values=sparse_vector["values"]
+            values=sparse_vector["values"],
         )
 
-        # Execute combined search with RRF Fusion in Rust engine
         results = await self.client.query_points(
             collection_name=collection_name,
             prefetch=[
@@ -97,28 +122,28 @@ class QdrantService:
                     using="dense",
                     query=dense_vector,
                     filter=user_filter,
-                    limit=20
+                    limit=20,
                 ),
                 Prefetch(
                     using="sparse",
                     query=formatted_sparse,
                     filter=user_filter,
-                    limit=20
+                    limit=20,
                 ),
             ],
             query=FusionQuery(fusion=Fusion.RRF),
-            limit=limit
+            limit=limit,
         )
 
-        # Format and return extracted document texts
-        documents = []
+        documents: List[Dict[str, Any]] = []
         for point in results.points:
             payload = point.payload or {}
-            documents.append({
-                "id": point.id,
-                "text": payload.get("text", ""),
-                "metadata": payload.get("metadata", {})
-            })
+            documents.append(
+                {
+                    "id": point.id,
+                    "text": payload.get("text", ""),
+                    "metadata": payload.get("metadata", {}),
+                }
+            )
 
         return documents
-
