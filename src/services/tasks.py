@@ -29,6 +29,11 @@ from src.rag.constants import (_INGEST_HARD_TIME_LIMIT,
                                 _INGEST_SOFT_TIME_LIMIT,
                                 _LOCK_TTL_SECONDS,
                                 _NON_RETRYABLE_CODE_ERRORS,
+                                _PURGE_FILE_SOFT_TIME_LIMIT,
+                                _PURGE_FILE_HARD_TIME_LIMIT,
+                                _PURGE_GEN_SOFT_TIME_LIMIT,
+                                _PURGE_GEN_HARD_TIME_LIMIT,
+
                                 )
 
 ############################################################################
@@ -584,8 +589,8 @@ def ingest_document(self: Any,
 @celery_app.task(
     bind=True,
     name="ingestion.purge_stale_local_uploads",
-    soft_time_limit=settings.PURGE_SOFT_TIME_LIMIT,
-    time_limit=settings.PURGE_HARD_TIME_LIMIT,
+    soft_time_limit=_PURGE_FILE_SOFT_TIME_LIMIT,
+    time_limit=_PURGE_FILE_HARD_TIME_LIMIT,
 )
 def purge_stale_local_uploads(self: Any) -> dict[str, Any]:
     """Sweep the local upload directory for orphaned files left by hard worker crashes.
@@ -632,7 +637,7 @@ def purge_stale_local_uploads(self: Any) -> dict[str, Any]:
                 settings.PURGE_LOCK_KEY,
                 "1",
                 nx=True,
-                ex=settings.PURGE_HARD_TIME_LIMIT + 60,
+                ex=_PURGE_FILE_HARD_TIME_LIMIT + 60,
             )
         )
     
@@ -772,7 +777,7 @@ def purge_stale_local_uploads(self: Any) -> dict[str, Any]:
                     "INGEST_PURGE_LOCK_RELEASE_FAILED | task_id=%s ttl_seconds=%d "
                     "err_type=%s err=%r action=deferred_to_ttl_expiry",
                     self.request.id,
-                    settings.PURGE_HARD_TIME_LIMIT + 60,
+                    _PURGE_FILE_HARD_TIME_LIMIT + 60,
                     type(exc).__name__,
                     str(exc),
                 )
@@ -801,8 +806,8 @@ def purge_stale_local_uploads(self: Any) -> dict[str, Any]:
 
 @celery_app.task(name="rag.purge_orphaned_generations",
                  ignore_result=True,
-                 soft_time_limit=120,
-                 time_limit=150,
+                 soft_time_limit=_PURGE_GEN_SOFT_TIME_LIMIT,
+                 time_limit=_PURGE_GEN_HARD_TIME_LIMIT,
                 )
 def purge_orphaned_generations_task() -> int:
     """Runs the scheduled Qdrant orphan-generation cleanup inside the Celery worker.
