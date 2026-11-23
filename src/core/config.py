@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # ingestion timeouts 
     INGESTION_SOFT_TIME_LIMIT_SECONDS: int = 600
     INGESTION_HARD_TIME_LIMIT_SECONDS: int = 690
-    STALE_UPLOAD_MAX_AGE: int = 3600 * 24 #every 24 hours
+    STALE_UPLOAD_MAX_AGE: int = 3600 * 24 # deletes file 24 hours old 
 
     # purge timeouts
     PURGE_FILE_SOFT_TIME_LIMIT: int = 200
@@ -71,6 +71,10 @@ class Settings(BaseSettings):
 
     PURGE_GEN_SOFT_TIME_LIMIT: int = 120
     PURGE_GEN_HARD_TIME_LIMIT: int = 150
+
+    # Interval in seconds between periodic orphan-generation cleanup runs (75 minutes)
+    PURGE_GEN_SCHEDULE: int = 75 * 60
+    PURGE_GEN_EXPIRES_MESSAGE: int = PURGE_GEN_SCHEDULE - (5 * 60)
 
     MAX_PURGE_FILES_PER_RUN: int = 5000
 

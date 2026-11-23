@@ -76,9 +76,9 @@ celery_app.conf.update(# Strict Serialization Security: Prevents Remote Code Exe
                                       "purge-orphaned-qdrant-generations": {# Registered Celery task name to dispatch
                                                                             "task": "rag.purge_orphaned_generations",
                                                                             # Triggers the sweep automatically every 75 minutes
-                                                                            "schedule": timedelta(minutes=75),
+                                                                            "schedule": settings.PURGE_GEN_SCHEDULE,
                                                                             # Sets message expiration so missed ticks do not pile up if workers were offline
-                                                                            "options": {"expires": timedelta(minutes=70)},
+                                                                            "options": {"expires": settings.PURGE_GEN_EXPIRES_MESSAGE},
                                                                            },
                                      },
                       )
