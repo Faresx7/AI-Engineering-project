@@ -19,7 +19,7 @@ from src.core.config import settings
 
 
 # ##############################################################################
-# 1. Model identifiers
+# Model identifiers
 # ##############################################################################
 
 _DENSE_MODEL_NAME: str = getattr(settings, "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
@@ -28,7 +28,17 @@ _SPARSE_MODEL_NAME: str = "Qdrant/bm25"
 
 
 # ##############################################################################
-# 2. Parsing & chunking safety limits
+# Qdrant client & hybrid search operational constants
+# ##############################################################################
+_QDRANT_DEFAULT_TIMEOUT_SECONDS: float = 15.0
+_QDRANT_MAX_CONCURRENCY: int = 32
+_RETRY_MAX_DELAY_SECONDS: float = 30.0
+
+_DEFAULT_SEARCH_LIMIT: int = 5
+_MAX_SEARCH_LIMIT: int = 10
+
+# ##############################################################################
+# Parsing & chunking safety limits
 # ##############################################################################
 
 _BATCH_SIZE: int = 64
@@ -39,7 +49,7 @@ _MAX_TEXT_BYTES: int = 10 * 1024 * 1024
 
 
 # ##############################################################################
-# 3. Retry policy (bounded, fail-fast after a few attempts)
+# Retry policy (bounded, fail-fast after a few attempts)
 # ##############################################################################
 
 _EMBED_MAX_RETRIES: int = 3
@@ -48,7 +58,7 @@ _RETRY_BASE_DELAY_SECONDS: float = 2.0
 
 
 # ##############################################################################
-# 4. Qdrant & orphan generation sweep defaults
+# Qdrant & orphan generation sweep defaults
 # ##############################################################################
 
 _DEFAULT_COLLECTION_NAME: str = getattr(settings, "QDRANT_COLLECTION_NAME", "rag_documents")
@@ -59,7 +69,7 @@ _DEFAULT_PURGE_MAX_DOCS: int = 100_000
 
 
 # ##############################################################################
-# 5. Celery worker & Beat maintenance policy
+# Celery worker & Beat maintenance policy
 # ##############################################################################
 
 # Code bugs that will never succeed on retry and should fail immediately
@@ -91,7 +101,7 @@ _PURGE_GEN_TASK_EXPIRES_SECONDS: int = max(300, (_PURGE_GEN_SCHEDULE_MINUTES * 6
 
 
 # ##############################################################################
-# 6. Immutable file extension sets
+# Immutable file extension sets
 # ##############################################################################
 
 # Extensions routed to the MarkItDown converter
