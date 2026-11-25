@@ -7,3 +7,4 @@ __pycache__
 storage
 docs
 todo.md
+celerybeat-schedule*
