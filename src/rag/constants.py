@@ -47,6 +47,23 @@ _MAX_CHUNKS_PER_DOC: int = 20_000
 _MAX_RECORD_CHARS: int = 4_000
 _MAX_TEXT_BYTES: int = 10 * 1024 * 1024
 
+# ##############################################################################
+# Embedding & Client Runtime Limits (clients.py)
+# ##############################################################################
+# Cap ONNX threads so FastEmbed does not starve FastAPI/Qdrant on small VPS CPUs
+_SPARSE_NUM_THREADS: int = 2
+
+# Gemini embed_content API safe batch limit per request (hard API cap is 100)
+_GEMINI_MAX_EMBED_BATCH: int = 95
+
+# HTTP client timeout in milliseconds for google-genai HttpOptions
+_GEMINI_TIMEOUT_MS: int = 20_000
+
+# Outer asyncio timeout (seconds) for live user query embeddings (fail fast)
+_GEMINI_QUERY_TIMEOUT_SECONDS: float = 15.0
+
+# Max concurrent live query embeddings from FastAPI to prevent 429 rate-limit spikes
+_MAX_CONCURRENT_QUERY_EMBEDS: int = 20
 
 # ##############################################################################
 # Retry policy (bounded, fail-fast after a few attempts)
