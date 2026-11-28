@@ -580,7 +580,8 @@ class QdrantService:
                 "id": point.id,
                 "text": text,
                 "doc_id": payload.get("doc_id") or "",
-                "chunk_index": int(raw_chunk_idx) if raw_chunk_idx is not None else 0,
+                "filename": payload.get("filename") or "unknown",
+                "chunk_index": int(raw_chunk_idx) if raw_chunk_idx is not None else -1,
                 "score": float(point.score) if point.score is not None else 0.0,
                 "metadata": payload.get("metadata") or {},
             })
